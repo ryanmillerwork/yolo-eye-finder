@@ -91,3 +91,7 @@ class YoloPoseBackend(LabelStudioMLBase):
             predictions.append({'result': ls_results})
 
         return predictions
+
+
+# Label Studio expects a class named "NewModel" in model.py
+NewModel = YoloPoseBackend
