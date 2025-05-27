@@ -73,7 +73,7 @@ class YoloPoseBackend(LabelStudioMLBase):
                 # Expected shape (K,D) e.g. (num_keypoints, 3 for x,y,visibility)
                 # The TypeError suggests it might sometimes be (1,K,D) leading to an extra list nesting.
                 
-                kp_tensor_as_list = keypoints.cpu().numpy().tolist() # Use keypoints directly, not keypoints.data
+                kp_tensor_as_list = keypoints.data.cpu().numpy().tolist() # Access .data attribute which is the tensor
                 
                 individual_kps_data = []
                 if kp_tensor_as_list: # Check if list is not empty
