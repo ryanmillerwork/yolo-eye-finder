@@ -68,23 +68,60 @@ class YoloPoseBackend(LabelStudioMLBase):
                     }
                 })
 
-                # keypoints
-                raw_pts = keypoints.data.cpu().numpy().tolist()
-                points  = [{
-                    'x': pt[0]/orig_w*100,
-                    'y': pt[1]/orig_h*100,
-                    'id': idx
-                } for idx, pt in enumerate(raw_pts)]
+                # KEYPOINTS Section
+                # keypoints_item is the tensor for the current instance's keypoints from the zip loop.
+                # Expected shape (K,D) e.g. (num_keypoints, 3 for x,y,visibility)
+                # The TypeError suggests it might sometimes be (1,K,D) leading to an extra list nesting.
+                
+                kp_tensor_as_list = keypoints.cpu().numpy().tolist() # Use keypoints directly, not keypoints.data
+                
+                individual_kps_data = []
+                if kp_tensor_as_list: # Check if list is not empty
+                    if isinstance(kp_tensor_as_list[0], list) and \
+                       kp_tensor_as_list[0] and isinstance(kp_tensor_as_list[0][0], list):
+                        # Handles cases like [[[x,y,v], ...]] (from a (1,K,D) tensor)
+                        individual_kps_data = kp_tensor_as_list[0]
+                    elif isinstance(kp_tensor_as_list[0], list):
+                        # Handles cases like [[x,y,v], ...] (from a (K,D) tensor)
+                        individual_kps_data = kp_tensor_as_list
+                    # Else, structure is not recognized or empty, individual_kps_data remains []
 
-                ls_results.append({
-                    'from_name': kp_from,
-                    'to_name':   'img',
-                    'type':      'keypointlabels',
-                    'value': {
-                        'points': points,
-                        'labels': kp_labels
-                    }
-                })
+                # kp_labels was defined earlier, e.g., ['left_pupil', 'right_pupil', 'nose_bridge']
+                
+                for kp_idx, single_kp_coords in enumerate(individual_kps_data):
+                    if kp_idx >= len(kp_labels):
+                        # More keypoints detected than labels defined for this class
+                        break 
+
+                    if not (isinstance(single_kp_coords, (list, tuple)) and len(single_kp_coords) >= 2):
+                        # Malformed keypoint data for this specific keypoint
+                        continue 
+
+                    x_px = float(single_kp_coords[0])
+                    y_px = float(single_kp_coords[1])
+                    visibility = 1.0 # Default if not present
+                    if len(single_kp_coords) > 2:
+                        visibility = float(single_kp_coords[2])
+
+                    # Skip keypoints that are often padding/non-existent in YOLO outputs
+                    # (i.e., at origin with low/zero visibility)
+                    if visibility < 0.1 and abs(x_px) < 1e-3 and abs(y_px) < 1e-3:
+                        continue
+                    
+                    ls_results.append({
+                        'from_name': kp_from, 
+                        'to_name': 'img', 
+                        'type': 'keypointlabels',
+                        'original_width': orig_w,
+                        'original_height': orig_h,
+                        'image_rotation': 0,
+                        'value': {
+                            'x': (x_px / orig_w) * 100.0 if orig_w > 0 else 0,
+                            'y': (y_px / orig_h) * 100.0 if orig_h > 0 else 0,
+                            'width': 1.0, # Label Studio UI often expects a small width
+                            'keypointlabels': [kp_labels[kp_idx]]
+                        }
+                    })
 
             predictions.append({'result': ls_results})
 
