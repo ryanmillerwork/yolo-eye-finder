@@ -14,7 +14,9 @@ Example:
 import os
 import argparse
 import zipfile
+import sys
 from label_studio_sdk import Client
+from dotenv import load_dotenv
 
 
 def main():
@@ -41,10 +43,18 @@ def main():
     # Create the output directory
     os.makedirs(args.output_dir)
 
+    # Load environment variables from .env file
+    load_dotenv()
+
     # Initialize Label Studio client
+    api_key = os.getenv("LABEL_STUDIO_API_KEY")
+    if not api_key:
+        print("Error: LABEL_STUDIO_API_KEY not found in .env file or environment.", file=sys.stderr)
+        sys.exit(1)
+
     ls = Client(
         url='http://localhost:8080',
-        api_key='cde00134ce9cef6811184456b4ae9e6d722ea5cd'
+        api_key=api_key
     )
 
     # Fetch the project
