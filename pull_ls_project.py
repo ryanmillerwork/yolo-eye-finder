@@ -51,6 +51,7 @@ def main():
     if not api_key:
         print("Error: LABEL_STUDIO_API_KEY not found in .env file or environment.", file=sys.stderr)
         sys.exit(1)
+    print(f"DEBUG: Loaded API Key: '{api_key[:5]}...{api_key[-5:]}'")
 
     ls = Client(
         url='http://localhost:8080',
