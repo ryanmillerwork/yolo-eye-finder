@@ -1,6 +1,6 @@
 """
 Label Studio ML backend for **Ultralytics YOLO‑pose** that feeds filtered
-key‑point predictions back to the UI and includes thorough logging and
+key-point predictions back to the UI and includes thorough logging and
 task‑data verification.
 
 Constants below are your only settings—no env vars.
@@ -19,13 +19,18 @@ from label_studio_ml.model import LabelStudioMLBase
 # ---------------------------------------------------------------------------
 # Configuration constants
 # ---------------------------------------------------------------------------
-MODEL_PATH = "yolo11n-pose.pt"  # YOLO checkpoint
-BOX_THR = 0.15                  # min box confidence
-KP_THR = 0.05                   # min key‑point confidence
-IMGSZ = (192, 128)              # (height, width)
-DEVICE = "cpu"                  # "cpu", "0", "cuda:1", …
-IMAGE_FIELD = "image"           # preferred key in task["data"] for image URL
+MODEL_PATH = "yolo11n-pose.pt"   # YOLO checkpoint
+BOX_THR = 0.15                    # min box confidence
+KP_THR = 0.05                     # min key-point confidence
+IMGSZ = (192, 128)                # (height, width)
+DEVICE = "cpu"                    # "cpu", "0", "cuda:1", …
+IMAGE_FIELD = "img"               # key in task["data"] for image URL
 
+# Label names as declared in Label Studio config
+RECT_LABELS = {0: ("bbox_face", "face"),    # class 0 → (rect tag name, label)
+               1: ("bbox_tube", "juice_tube")}  # class 1 → (rect tag name, label)
+KPT_LABELS = {0: ("kp_face", ["left_pupil", "right_pupil", "nose_bridge"]),
+              1: ("kp_tube", ["spout_top", "spout_bottom"])}
 # ---------------------------------------------------------------------------
 # Logging setup
 # ---------------------------------------------------------------------------
@@ -53,18 +58,6 @@ class NewModel(LabelStudioMLBase):
         self.imgsz = IMGSZ
         self.device = DEVICE
 
-        # Key-point labels mapping
-        self.kpt_labels = kwargs.get("keypoint_labels")
-        if self.kpt_labels is None:
-            try:
-                kpt_count = int(self.model.model.kpt_shape[0])  # e.g. [3,3]
-                self.kpt_labels = [f"kp_{i}" for i in range(kpt_count)]
-                logger.debug("Auto-generated %d key-point labels", kpt_count)
-            except Exception as exc:
-                logger.exception("Failed to derive key-point labels: %s", exc)
-                self.kpt_labels = []
-        logger.debug("Key‑point labels: %s", self.kpt_labels)
-
     # ------------------------------------------------------------------
     # Prediction API
     # ------------------------------------------------------------------
@@ -81,26 +74,23 @@ class NewModel(LabelStudioMLBase):
             img_url = data.get(IMAGE_FIELD)
             if not img_url:
                 if data:
-                    # fallback to first field value
                     img_url = next(iter(data.values()))
-                    logger.warning("Task %s: '%s' not found, using fallback URL from data", task_id, IMAGE_FIELD)
+                    logger.warning("Task %s: '%s' not found, using fallback URL", task_id, IMAGE_FIELD)
                 else:
                     logger.error("Task %s has no data fields", task_id)
                     predictions.append({"result": [], "score": 0.0})
                     continue
 
-            logger.debug("Task %s → processing image URL: %s", task_id, img_url)
+            logger.debug("Task %s → processing URL: %s", task_id, img_url)
             img_path_str = self.get_local_path(img_url)
             img_path = Path(img_path_str)
-            logger.debug("Task %s → local image path: %s", task_id, img_path)
+            logger.debug("Task %s → local path: %s", task_id, img_path)
 
-            # Check file existence
             if not img_path.exists():
-                logger.error("Task %s: image file does not exist at %s", task_id, img_path)
+                logger.error("Task %s: file does not exist: %s", task_id, img_path)
                 predictions.append({"result": [], "score": 0.0})
                 continue
 
-            # YOLO forward pass
             try:
                 res = self.model.predict(
                     source=str(img_path),
@@ -109,7 +99,7 @@ class NewModel(LabelStudioMLBase):
                     conf=self.box_thr,
                     verbose=False,
                 )[0]
-                logger.debug("Task %s: YOLO returned %d raw detections", task_id, len(res.boxes))
+                logger.debug("Task %s: raw detections = %d", task_id, len(res.boxes))
             except Exception as exc:
                 logger.exception("Task %s: YOLO inference error: %s", task_id, exc)
                 predictions.append({"result": [], "score": 0.0})
@@ -118,11 +108,17 @@ class NewModel(LabelStudioMLBase):
             h_orig, w_orig = res.orig_shape
             task_results = []
 
-            # Process each detection
-            for det_idx, (box, det_conf) in enumerate(zip(res.boxes.xywh, res.boxes.conf)):
-                logger.debug("Task %s: detection %d with conf=%.3f", task_id, det_idx, det_conf)
+            for det_idx, (box, det_conf, cls) in enumerate(zip(res.boxes.xywh, res.boxes.conf, res.boxes.cls)):
+                cls = int(cls)
+                logger.debug("Task %s: det %d cls=%d conf=%.3f", task_id, det_idx, cls, det_conf)
                 if det_conf < self.box_thr:
-                    logger.debug("Task %s: skip box %d below threshold", task_id, det_idx)
+                    logger.debug("Task %s: skip box %d below thr", task_id, det_idx)
+                    continue
+
+                rect_tag, rect_label = RECT_LABELS.get(cls, (None, None))
+                kp_tag, kp_names = KPT_LABELS.get(cls, (None, []))
+                if rect_tag is None or kp_tag is None:
+                    logger.warning("Task %s: unknown class %d", task_id, cls)
                     continue
 
                 x_c, y_c, bw, bh = box.tolist()
@@ -131,46 +127,58 @@ class NewModel(LabelStudioMLBase):
                 w_pct = bw / w_orig * 100
                 h_pct = bh / h_orig * 100
 
-                kp_xy = res.keypoints.xy[det_idx].cpu().numpy()
-                kp_conf = res.keypoints.conf[det_idx].cpu().numpy()
-                points = []
-
-                for kp_idx, ((x, y), kconf) in enumerate(zip(kp_xy, kp_conf)):
-                    logger.debug("Task %s: KP %d conf=%.3f", task_id, kp_idx, kconf)
-                    if kconf < self.kp_thr:
-                        logger.debug("Task %s: drop KP %d below threshold", task_id, kp_idx)
-                        continue
-                    points.append({
-                        "x": float(x / w_orig * 100),
-                        "y": float(y / h_orig * 100),
-                        "label": [self.kpt_labels[kp_idx]] if kp_idx < len(self.kpt_labels) else [],
-                        "confidence": float(kconf),
-                    })
-
-                if not points:
-                    logger.debug("Task %s: no KPs above threshold for box %d", task_id, det_idx)
-                    continue
-
-                logger.info("Task %s: kept box %d with %d key-points", task_id, det_idx, len(points))
+                # Rectangle annotation
                 task_results.append({
                     "id": str(uuid4()),
-                    "from_name": "keypoints",  # must match LS labeling config
-                    "to_name": "image",
-                    "type": "keypointlabels",
-                    "score": float(det_conf),
+                    "from_name": rect_tag,
+                    "to_name": IMAGE_FIELD,
+                    "type": "rectanglelabels",
                     "value": {
-                        "points": points,
                         "x": tlx_pct,
                         "y": tly_pct,
                         "width": w_pct,
                         "height": h_pct,
-                    },
+                        "rectanglelabels": [rect_label]
+                    }
                 })
 
-            logger.debug("Task %s: final results count = %d", task_id, len(task_results))
+                # Key-points for this class
+                kp_xy = res.keypoints.xy[det_idx].cpu().numpy()
+                kp_conf = res.keypoints.conf[det_idx].cpu().numpy()
+                points = []
+                for kp_idx, ((x, y), kconf) in enumerate(zip(kp_xy, kp_conf)):
+                    label_name = kp_names[kp_idx] if kp_idx < len(kp_names) else None
+                    logger.debug("Task %s: KP %d cls=%d conf=%.3f", task_id, kp_idx, cls, kconf)
+                    if kconf < self.kp_thr or label_name is None:
+                        continue
+                    points.append({
+                        "x": float(x / w_orig * 100),
+                        "y": float(y / h_orig * 100),
+                        "label": [label_name],
+                        "confidence": float(kconf),
+                    })
+
+                if points:
+                    task_results.append({
+                        "id": str(uuid4()),
+                        "from_name": kp_tag,
+                        "to_name": IMAGE_FIELD,
+                        "type": "keypointlabels",
+                        "score": float(det_conf),
+                        "value": {
+                            "points": points,
+                            "x": tlx_pct,
+                            "y": tly_pct,
+                            "width": w_pct,
+                            "height": h_pct
+                        },
+                    })
+                    logger.info("Task %s: kept cls=%d box %d with %d KPs", task_id, cls, det_idx, len(points))
+
+            logger.debug("Task %s: total results = %d", task_id, len(task_results))
             predictions.append({
                 "result": task_results,
-                "score": float(np.mean([r["score"] for r in task_results]) if task_results else 0.0),
+                "score": float(np.mean([r.get("score", 0.0) for r in task_results]) if task_results else 0.0),
             })
 
         return predictions
