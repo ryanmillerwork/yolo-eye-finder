@@ -31,7 +31,7 @@ IMGSZ      = (192, 128)          # height, width sent to YOLO
 DEVICE     = "cpu"               # "cpu", "0", "cuda:1", …
 
 
-class YOLOPoseFiltered(LabelStudioMLBase):
+class NewModel(LabelStudioMLBase):
     """Ultralytics YOLO‑pose wrapper with per‑key‑point confidence filtering."""
 
     def __init__(self, **kwargs):
