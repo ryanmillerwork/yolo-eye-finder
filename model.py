@@ -25,8 +25,8 @@ from ultralytics import YOLO
 from label_studio_ml.model import LabelStudioMLBase
 
 MODEL_PATH = "yolo11n-pose.pt"   # checkpoint to load
-BOX_THR    = 0.20                # minimum box confidence
-KP_THR     = 0.25                # minimum key‑point confidence
+BOX_THR    = 0.15                # minimum box confidence (was 0.20)                # minimum box confidence
+KP_THR     = 0.05                # minimum key‑point confidence (was 0.25)                # minimum key‑point confidence
 IMGSZ      = (192, 128)          # height, width sent to YOLO
 DEVICE     = "cpu"               # "cpu", "0", "cuda:1", …
 
