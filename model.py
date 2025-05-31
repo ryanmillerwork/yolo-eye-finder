@@ -24,7 +24,7 @@ class YoloPoseBackend(LabelStudioMLBase):
                 orig_w, orig_h = img.size
 
             # run inference
-            results = self.model.predict(source=image_path, device='cpu', imgsz=192, 128)[0]
+            results = self.model.predict(source=image_path, device='cpu', imgsz=(192, 128))[0]
             class_names = self.model.names
 
             # Store all valid, processed detections before filtering
