@@ -1,42 +1,41 @@
 """
-Label Studio ML backend for **Ultralytics YOLO‑pose** that sends filtered
-key‑point predictions back to the UI.
+Label Studio ML backend for **Ultralytics YOLO‑pose** that feeds filtered
+key‑point predictions back to the UI and now includes robust logging and
+error‑handling.
 
-• All tunables are simple constants below.
-• Excessive ASCII art banner removed per user request.
-• Added DEBUG‑level console logging so you can trace exactly what happens
-  for every task the backend receives.
+Constants below are your only settings—no env vars required.
 """
 from __future__ import annotations
 
+import logging
 from pathlib import Path
 from typing import List
 from uuid import uuid4
 
-import logging
 import numpy as np
 from ultralytics import YOLO
 from label_studio_ml.model import LabelStudioMLBase
 
 # ---------------------------------------------------------------------------
-# Configuration constants — tweak as needed
+# Configuration constants
 # ---------------------------------------------------------------------------
-MODEL_PATH = "yolo11n-pose.pt"  # checkpoint to load
-BOX_THR    = 0.15               # minimum box confidence
-KP_THR     = 0.05               # minimum key‑point confidence
-IMGSZ      = (192, 128)         # (height, width) sent to YOLO
-DEVICE     = "cpu"              # "cpu", "0", "cuda:1", …
+MODEL_PATH = "yolo11n-pose.pt"  # YOLO checkpoint
+BOX_THR = 0.15                  # min box confidence
+KP_THR = 0.05                   # min key‑point confidence
+IMGSZ = (192, 128)              # (height, width)
+DEVICE = "cpu"                  # "cpu", "0", "cuda:1", …
+IMAGE_FIELD = "image"           # key in task["data"] that holds the image URL
 
 # ---------------------------------------------------------------------------
-# Logging setup — everything goes to the console
+# Logging setup
 # ---------------------------------------------------------------------------
-logging.basicConfig(level=logging.DEBUG,
-                    format="[%(levelname)s] %(message)s")
+logging.basicConfig(level=logging.INFO, format="[%(levelname)s] %(message)s")
 logger = logging.getLogger(__name__)
+logger.setLevel(logging.DEBUG)  # force DEBUG even if LS reset root logger
 
 
 class NewModel(LabelStudioMLBase):
-    """YOLO‑pose wrapper that filters low‑confidence key‑points and logs steps."""
+    """Ultralytics YOLO‑pose wrapper with filtering and verbose logging."""
 
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
@@ -56,52 +55,62 @@ class NewModel(LabelStudioMLBase):
         logger.debug("Key‑point labels: %s", self.kpt_labels)
 
     # ------------------------------------------------------------------
-    # Public API required by Label Studio ML backend
+    # Prediction API
     # ------------------------------------------------------------------
     def predict(self, tasks: List[dict], **kwargs):  # noqa: D401
-        """Generate filtered pre‑annotations for the given Label Studio *tasks*."""
+        """Return filtered YOLO‑pose predictions for Label Studio *tasks*."""
         predictions = []
 
         for task in tasks:
-            img_url = next(iter(task["data"].values()))  # first data field
-            img_path = self.get_local_path(img_url)
-            logger.debug("Processing task id=%s • image=%s", task.get("id"), img_url)
+            img_url = task["data"].get(IMAGE_FIELD)
+            if not img_url:
+                logger.error("Task %s missing '%s' field", task.get("id"), IMAGE_FIELD)
+                predictions.append({"result": [], "score": 0.0})
+                continue
 
-            # Run the model
-            res = self.model.predict(
-                source=img_path,
-                imgsz=self.imgsz,
-                device=self.device,
-                conf=self.box_thr,  # global box filter
-                verbose=False,
-            )[0]
+            img_path: Path = self.get_local_path(img_url)
+            logger.debug("Task %s → %s", task.get("id"), img_path)
 
-            logger.debug("Model returned %d detections", len(res.boxes))
+            # ------------------------------ YOLO forward pass
+            try:
+                res = self.model.predict(
+                    source=str(img_path),
+                    imgsz=self.imgsz,
+                    device=self.device,
+                    conf=self.box_thr,
+                    verbose=False,
+                )[0]
+            except Exception as exc:  # pylint: disable=broad-except
+                logger.exception("YOLO inference failed on %s: %s", img_path, exc)
+                predictions.append({"result": [], "score": 0.0})
+                continue
 
-            h_orig, w_orig = res.orig_shape  # needed for % conversion
+            logger.debug("%d detections returned", len(res.boxes))
+
+            h_orig, w_orig = res.orig_shape
             task_results = []
 
             for det_idx, (box, det_conf) in enumerate(zip(res.boxes.xywh, res.boxes.conf)):
                 if det_conf < self.box_thr:
-                    logger.debug("Skipping box %d: conf %.3f < %.3f", det_idx, det_conf, self.box_thr)
-                    continue  # skip weak detection
+                    logger.debug("Skip box %d: conf=%.3f < %.3f", det_idx, det_conf, self.box_thr)
+                    continue
 
-                # Convert box from center‑xywh to top‑left‑width‑height in %
+                # Convert box (cx,cy,w,h) → LS % coordinates (top‑left + size)
                 x_c, y_c, bw, bh = box.tolist()
                 tlx_pct = (x_c - bw / 2) / w_orig * 100
                 tly_pct = (y_c - bh / 2) / h_orig * 100
                 w_pct = bw / w_orig * 100
                 h_pct = bh / h_orig * 100
 
-                # Collect key‑points above threshold
+                # Filter key‑points
                 kp_xy = res.keypoints.xy[det_idx].cpu().numpy()
                 kp_conf = res.keypoints.conf[det_idx].cpu().numpy()
 
                 points = []
                 for kp_idx, ((x, y), kconf) in enumerate(zip(kp_xy, kp_conf)):
                     if kconf < self.kp_thr:
-                        logger.debug("  • drop KP %d: conf %.3f < %.3f", kp_idx, kconf, self.kp_thr)
-                        continue  # drop low‑conf kp
+                        logger.debug("  • drop KP %d conf=%.3f", kp_idx, kconf)
+                        continue
                     points.append({
                         "x": float(x / w_orig * 100),
                         "y": float(y / h_orig * 100),
@@ -110,16 +119,13 @@ class NewModel(LabelStudioMLBase):
                     })
 
                 if not points:
-                    logger.debug("Box %d discarded – all KPs below threshold", det_idx)
+                    logger.debug("All key‑points dropped for box %d", det_idx)
                     continue
-
-                logger.debug("Box %d kept with %d key‑points (conf %.3f)",
-                             det_idx, len(points), det_conf)
 
                 task_results.append({
                     "id": str(uuid4()),
-                    "from_name": "keypoints",  # MUST match labeling config
-                    "to_name": "image",        # MUST match labeling config
+                    "from_name": "keypoints",  # must match LS labeling config
+                    "to_name": "image",
                     "type": "keypointlabels",
                     "score": float(det_conf),
                     "value": {
@@ -131,18 +137,16 @@ class NewModel(LabelStudioMLBase):
                     },
                 })
 
-            logger.debug("Task finished with %d detections after filtering", len(task_results))
-
+            logger.debug("Task %s finished with %d results", task.get("id"), len(task_results))
             predictions.append({
                 "result": task_results,
-                "score": float(np.mean([rr["score"] for rr in task_results]) if task_results else 0.0),
+                "score": float(np.mean([r["score"] for r in task_results]) if task_results else 0.0),
             })
 
         return predictions
 
     # ------------------------------------------------------------------
-    # Training hook (not used here)
+    # Training hook (unused)
     # ------------------------------------------------------------------
     def fit(self, **kwargs):  # noqa: D401
-        """Dummy *fit* so the ML backend can be registered without training."""
         return {}
