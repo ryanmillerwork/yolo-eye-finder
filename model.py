@@ -53,7 +53,7 @@ class NewModel(LabelStudioMLBase):
         self.imgsz = IMGSZ
         self.device = DEVICE
 
-        # Key‑point labels mapping
+        # Key-point labels mapping
         self.kpt_labels = kwargs.get("keypoint_labels")
         if self.kpt_labels is None:
             try:
@@ -90,7 +90,8 @@ class NewModel(LabelStudioMLBase):
                     continue
 
             logger.debug("Task %s → processing image URL: %s", task_id, img_url)
-            img_path: Path = self.get_local_path(img_url)
+            img_path_str = self.get_local_path(img_url)
+            img_path = Path(img_path_str)
             logger.debug("Task %s → local image path: %s", task_id, img_path)
 
             # Check file existence
