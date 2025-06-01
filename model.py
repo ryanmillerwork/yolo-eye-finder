@@ -5,7 +5,7 @@ from PIL import Image
 class YoloPoseBackend(LabelStudioMLBase):
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
-        self.model = YOLO("./yolo-pose-backend/best-nano.pt")
+        self.model = YOLO("./yolo-pose-backend/best-small.pt")
 
     def predict(self, tasks, context=None, **kwargs):
         predictions = []
