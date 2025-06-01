@@ -9,7 +9,7 @@ class YoloPoseBackend(LabelStudioMLBase):
 
     def predict(self, tasks, context=None, **kwargs):
         predictions = []
-        KEYPOINT_CONFIDENCE_THRESHOLD = 0.5 # Threshold for filtering keypoints
+        KEYPOINT_CONFIDENCE_THRESHOLD = 0.7 # Threshold for filtering keypoints
 
         for task in tasks:
             data = task.get('data', {})
