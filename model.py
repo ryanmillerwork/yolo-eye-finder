@@ -9,6 +9,8 @@ class YoloPoseBackend(LabelStudioMLBase):
 
     def predict(self, tasks, context=None, **kwargs):
         predictions = []
+        KEYPOINT_CONFIDENCE_THRESHOLD = 0.5 # Threshold for filtering keypoints
+
         for task in tasks:
             data = task.get('data', {})
             uri  = data.get('img') or data.get('image')
@@ -42,8 +44,15 @@ class YoloPoseBackend(LabelStudioMLBase):
             boxes_conf_all = results.boxes.conf.cpu().numpy()
             
             keypoints_xyn_all_detections_np = None
-            if results.keypoints is not None and results.keypoints.xyn is not None:
-                keypoints_xyn_all_detections_np = results.keypoints.xyn.cpu().numpy()
+            keypoints_conf_all_detections_np = None # For keypoint confidences
+
+            if results.keypoints is not None:
+                if results.keypoints.xyn is not None:
+                    keypoints_xyn_all_detections_np = results.keypoints.xyn.cpu().numpy()
+                if hasattr(results.keypoints, 'conf') and results.keypoints.conf is not None: # Check for conf attribute
+                    keypoints_conf_all_detections_np = results.keypoints.conf.cpu().numpy()
+                else:
+                    print("DEBUG YoloPoseBackend: results.keypoints.conf is None or not available.")
 
             for i in range(num_detections):
                 box_coords_norm = boxes_xyxyn_all[i]
@@ -92,37 +101,46 @@ class YoloPoseBackend(LabelStudioMLBase):
 
                 # Keypoint Processing for current detection i
                 current_kps_ls_items = []
-                # keypoints_for_this_detection_np will be a (K,D) numpy array of normalized coords or None
+                
                 keypoints_for_this_detection_normalized_np = None
+                keypoints_conf_for_this_detection_np = None
+
                 if keypoints_xyn_all_detections_np is not None and i < keypoints_xyn_all_detections_np.shape[0]:
                     keypoints_for_this_detection_normalized_np = keypoints_xyn_all_detections_np[i]
+                
+                if keypoints_conf_all_detections_np is not None and i < keypoints_conf_all_detections_np.shape[0]:
+                    keypoints_conf_for_this_detection_np = keypoints_conf_all_detections_np[i]
 
                 if keypoints_for_this_detection_normalized_np is not None and defined_kp_labels_for_class:
                     # Iterate over rows of the (K,D) numpy array for this instance
                     for kp_idx, single_kp_coords_normalized_row in enumerate(keypoints_for_this_detection_normalized_np):
                         if kp_idx >= len(defined_kp_labels_for_class):
                             break # Processed all defined keypoints for this class
-
-                        # ADDED LOGGING HERE
-                        print(f"DEBUG YoloPoseBackend: Raw keypoint data for {class_names.get(cls_id_val, '')} detection {i}, keypoint index {kp_idx} ('{defined_kp_labels_for_class[kp_idx]}'): {single_kp_coords_normalized_row}")
-
+                        
                         if not (isinstance(single_kp_coords_normalized_row, (list, tuple)) or type(single_kp_coords_normalized_row).__name__ == 'ndarray') or len(single_kp_coords_normalized_row) < 2:
+                            print(f"DEBUG YoloPoseBackend: Skipping malformed keypoint data for '{defined_kp_labels_for_class[kp_idx]}': {single_kp_coords_normalized_row}")
                             continue 
 
                         kp_x_norm = float(single_kp_coords_normalized_row[0])
                         kp_y_norm = float(single_kp_coords_normalized_row[1])
-                        visibility = 1.0 
-                        if len(single_kp_coords_normalized_row) > 2:
-                            # Assuming the 3rd value is visibility/confidence, already normalized or a flag
-                            visibility = float(single_kp_coords_normalized_row[2]) 
                         
-                        # ADDED LOGGING HERE
-                        print(f"DEBUG YoloPoseBackend: Derived visibility for '{defined_kp_labels_for_class[kp_idx]}': {visibility}, coords: ({kp_x_norm:.3f}, {kp_y_norm:.3f})")
+                        # NEW Keypoint Filtering Logic
+                        kp_label_name = defined_kp_labels_for_class[kp_idx]
 
-                        # Skip keypoints that are often padding/non-existent in YOLO outputs
-                        # (i.e., at origin with low/zero visibility). Normalized coords are 0-1.
-                        if visibility < 0.1 and abs(kp_x_norm) < 1e-3 and abs(kp_y_norm) < 1e-3:
-                            continue
+                        if keypoints_conf_for_this_detection_np is not None and kp_idx < len(keypoints_conf_for_this_detection_np):
+                            kp_confidence = float(keypoints_conf_for_this_detection_np[kp_idx])
+                            print(f"DEBUG YoloPoseBackend: KP '{kp_label_name}' Coords: ({kp_x_norm:.3f}, {kp_y_norm:.3f}), Conf: {kp_confidence:.3f}")
+                            if kp_confidence < KEYPOINT_CONFIDENCE_THRESHOLD:
+                                print(f"DEBUG YoloPoseBackend: Skipping KP '{kp_label_name}' due to low confidence ({kp_confidence:.3f} < {KEYPOINT_CONFIDENCE_THRESHOLD})")
+                                continue
+                        else:
+                            # No confidence score available for this keypoint, fall back to (0,0) check
+                            # This path might be taken if results.keypoints.conf was None for all detections,
+                            # or if the conf tensor had an unexpected shape for this specific detection.
+                            print(f"DEBUG YoloPoseBackend: No confidence for KP '{kp_label_name}'. Coords: ({kp_x_norm:.3f}, {kp_y_norm:.3f}). Checking for (0,0).")
+                            if abs(kp_x_norm) < 1e-5 and abs(kp_y_norm) < 1e-5: # Stricter (0,0) check
+                                print(f"DEBUG YoloPoseBackend: Skipping KP '{kp_label_name}' due to (0,0) location and no confidence score.")
+                                continue
                         
                         current_kps_ls_items.append({
                             'from_name': kp_from_name, 
