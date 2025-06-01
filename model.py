@@ -1,190 +1,161 @@
-"""
-Label Studio ML backend for **Ultralytics YOLO‑pose** that feeds filtered
-key-point predictions back to the UI and includes thorough logging and
-task‑data verification.
-
-Constants below are your only settings—no env vars.
-"""
-from __future__ import annotations
-
-import logging
-from pathlib import Path
-from typing import List
-from uuid import uuid4
-
-import numpy as np
-from ultralytics import YOLO
 from label_studio_ml.model import LabelStudioMLBase
+from ultralytics import YOLO
+from PIL import Image
 
-# ---------------------------------------------------------------------------
-# Configuration constants
-# ---------------------------------------------------------------------------
-MODEL_PATH = "yolo11n-pose.pt"   # YOLO checkpoint
-BOX_THR = 0.15                    # min box confidence
-KP_THR = 0.05                     # min key-point confidence
-IMGSZ = (192, 128)                # (height, width)
-DEVICE = "cpu"                    # "cpu", "0", "cuda:1", …
-IMAGE_FIELD = "img"               # key in task["data"] for image URL
-
-# Label names as declared in Label Studio config
-RECT_LABELS = {0: ("bbox_face", "face"),    # class 0 → (rect tag name, label)
-               1: ("bbox_tube", "juice_tube")}  # class 1 → (rect tag name, label)
-KPT_LABELS = {0: ("kp_face", ["left_pupil", "right_pupil", "nose_bridge"]),
-              1: ("kp_tube", ["spout_top", "spout_bottom"])}
-# ---------------------------------------------------------------------------
-# Logging setup
-# ---------------------------------------------------------------------------
-logging.basicConfig(level=logging.INFO, format="[%(levelname)s] %(message)s")
-logger = logging.getLogger(__name__)
-logger.setLevel(logging.DEBUG)
-
-
-class NewModel(LabelStudioMLBase):
-    """Ultralytics YOLO‑pose wrapper with filtering and detailed logging."""
-
+class YoloPoseBackend(LabelStudioMLBase):
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
+        self.model = YOLO("./yolo-pose-backend/best-nano.pt")
 
-        logger.info("Initializing YOLO‑pose backend")
-        try:
-            self.model = YOLO(MODEL_PATH)
-            logger.info("Loaded model from %s", MODEL_PATH)
-        except Exception as exc:
-            logger.exception("Failed to load model from %s: %s", MODEL_PATH, exc)
-            raise
-
-        self.box_thr = BOX_THR
-        self.kp_thr = KP_THR
-        self.imgsz = IMGSZ
-        self.device = DEVICE
-
-    # ------------------------------------------------------------------
-    # Prediction API
-    # ------------------------------------------------------------------
-    def predict(self, tasks: List[dict], **kwargs):  # noqa: D401
-        """Return filtered YOLO‑pose predictions for Label Studio tasks."""
+    def predict(self, tasks, context=None, **kwargs):
         predictions = []
-
         for task in tasks:
-            task_id = task.get("id")
-            data = task.get("data", {})
-            logger.debug("Task %s data fields: %s", task_id, list(data.keys()))
-
-            # Determine image URL
-            img_url = data.get(IMAGE_FIELD)
-            if not img_url:
-                if data:
-                    img_url = next(iter(data.values()))
-                    logger.warning("Task %s: '%s' not found, using fallback URL", task_id, IMAGE_FIELD)
-                else:
-                    logger.error("Task %s has no data fields", task_id)
-                    predictions.append({"result": [], "score": 0.0})
-                    continue
-
-            logger.debug("Task %s → processing URL: %s", task_id, img_url)
-            img_path_str = self.get_local_path(img_url)
-            img_path = Path(img_path_str)
-            logger.debug("Task %s → local path: %s", task_id, img_path)
-
-            if not img_path.exists():
-                logger.error("Task %s: file does not exist: %s", task_id, img_path)
-                predictions.append({"result": [], "score": 0.0})
+            data = task.get('data', {})
+            uri  = data.get('img') or data.get('image')
+            if not uri:
+                predictions.append({'result': []})
                 continue
 
             try:
-                res = self.model.predict(
-                    source=str(img_path),
-                    imgsz=self.imgsz,
-                    device=self.device,
-                    conf=self.box_thr,
-                    verbose=False,
-                )[0]
-                logger.debug("Task %s: raw detections = %d", task_id, len(res.boxes))
-            except Exception as exc:
-                logger.exception("Task %s: YOLO inference error: %s", task_id, exc)
-                predictions.append({"result": [], "score": 0.0})
+                image_path = self.get_local_path(uri, task_id=task['id'])
+            except Exception:
+                image_path = uri
+            with Image.open(image_path) as img:
+                orig_w, orig_h = img.size
+
+            # run inference
+            results = self.model.predict(source=image_path, device='cpu', imgsz=(192, 128))[0]
+            class_names = self.model.names
+
+            # Store all valid, processed detections before filtering
+            # Structure: {'face': [{'confidence': 0.9, 'box_ls_item': {...}, 'kps_ls_items': [...]}, ...], 'juice_tube': []}
+            all_processed_detections = {'face': [], 'juice_tube': []}
+
+            num_detections = results.boxes.shape[0]
+            if num_detections == 0:
+                predictions.append({'result': []})
                 continue
 
-            h_orig, w_orig = res.orig_shape
-            task_results = []
+            # Get all tensor data once
+            boxes_xyxyn_all = results.boxes.xyxyn.cpu().numpy()
+            boxes_cls_all = results.boxes.cls.cpu().numpy()
+            boxes_conf_all = results.boxes.conf.cpu().numpy()
+            
+            keypoints_xyn_all_detections_np = None
+            if results.keypoints is not None and results.keypoints.xyn is not None:
+                keypoints_xyn_all_detections_np = results.keypoints.xyn.cpu().numpy()
 
-            for det_idx, (box, det_conf, cls) in enumerate(zip(res.boxes.xywh, res.boxes.conf, res.boxes.cls)):
-                cls = int(cls)
-                logger.debug("Task %s: det %d cls=%d conf=%.3f", task_id, det_idx, cls, det_conf)
-                if det_conf < self.box_thr:
-                    logger.debug("Task %s: skip box %d below thr", task_id, det_idx)
-                    continue
+            for i in range(num_detections):
+                box_coords_norm = boxes_xyxyn_all[i]
+                cls_id_val = int(boxes_cls_all[i])
+                conf_score_val = float(boxes_conf_all[i])
+                
+                # Bounding Box Processing from normalized coordinates
+                x1_norm, y1_norm, x2_norm, y2_norm = box_coords_norm
+                
+                x_pct = x1_norm * 100.0
+                y_pct = y1_norm * 100.0
+                w_pct = (x2_norm - x1_norm) * 100.0
+                h_pct = (y2_norm - y1_norm) * 100.0
 
-                rect_tag, rect_label = RECT_LABELS.get(cls, (None, None))
-                kp_tag, kp_names = KPT_LABELS.get(cls, (None, []))
-                if rect_tag is None or kp_tag is None:
-                    logger.warning("Task %s: unknown class %d", task_id, cls)
-                    continue
+                cls_name_str = class_names.get(cls_id_val, '')
+                
+                current_box_ls_item = None
+                kp_from_name = ''
+                defined_kp_labels_for_class = []
 
-                x_c, y_c, bw, bh = box.tolist()
-                tlx_pct = (x_c - bw / 2) / w_orig * 100
-                tly_pct = (y_c - bh / 2) / h_orig * 100
-                w_pct = bw / w_orig * 100
-                h_pct = bh / h_orig * 100
+                if cls_name_str == 'face':
+                    bbox_from_name, kp_from_name = 'bbox_face', 'kp_face'
+                    rect_label_val = ['face']
+                    defined_kp_labels_for_class  = ['left_pupil', 'right_pupil', 'nose_bridge']
+                elif cls_name_str == 'juice_tube':
+                    bbox_from_name, kp_from_name = 'bbox_tube', 'kp_tube'
+                    rect_label_val = ['juice_tube']
+                    defined_kp_labels_for_class  = ['spout_top', 'spout_bottom']
+                else:
+                    continue # Skip other classes
 
-                # Rectangle annotation
-                task_results.append({
-                    "id": str(uuid4()),
-                    "from_name": rect_tag,
-                    "to_name": IMAGE_FIELD,
-                    "type": "rectanglelabels",
-                    "value": {
-                        "x": tlx_pct,
-                        "y": tly_pct,
-                        "width": w_pct,
-                        "height": h_pct,
-                        "rectanglelabels": [rect_label]
+                current_box_ls_item = {
+                    'from_name': bbox_from_name,
+                    'to_name':   'img',
+                    'type':      'rectanglelabels',
+                    'original_width': orig_w,
+                    'original_height': orig_h,
+                    'image_rotation': 0,
+                    'value': {
+                        'x': x_pct, 'y': y_pct,
+                        'width':  w_pct, 'height': h_pct,
+                        'rotation': 0,
+                        'rectanglelabels': rect_label_val
                     }
-                })
+                }
 
-                # Key-points for this class
-                kp_xy = res.keypoints.xy[det_idx].cpu().numpy()
-                kp_conf = res.keypoints.conf[det_idx].cpu().numpy()
-                points = []
-                for kp_idx, ((x, y), kconf) in enumerate(zip(kp_xy, kp_conf)):
-                    label_name = kp_names[kp_idx] if kp_idx < len(kp_names) else None
-                    logger.debug("Task %s: KP %d cls=%d conf=%.3f", task_id, kp_idx, cls, kconf)
-                    if kconf < self.kp_thr or label_name is None:
-                        continue
-                    points.append({
-                        "x": float(x / w_orig * 100),
-                        "y": float(y / h_orig * 100),
-                        "label": [label_name],
-                        "confidence": float(kconf),
+                # Keypoint Processing for current detection i
+                current_kps_ls_items = []
+                # keypoints_for_this_detection_np will be a (K,D) numpy array of normalized coords or None
+                keypoints_for_this_detection_normalized_np = None
+                if keypoints_xyn_all_detections_np is not None and i < keypoints_xyn_all_detections_np.shape[0]:
+                    keypoints_for_this_detection_normalized_np = keypoints_xyn_all_detections_np[i]
+
+                if keypoints_for_this_detection_normalized_np is not None and defined_kp_labels_for_class:
+                    # Iterate over rows of the (K,D) numpy array for this instance
+                    for kp_idx, single_kp_coords_normalized_row in enumerate(keypoints_for_this_detection_normalized_np):
+                        if kp_idx >= len(defined_kp_labels_for_class):
+                            break # Processed all defined keypoints for this class
+
+                        if not (isinstance(single_kp_coords_normalized_row, (list, tuple)) or type(single_kp_coords_normalized_row).__name__ == 'ndarray') or len(single_kp_coords_normalized_row) < 2:
+                            continue 
+
+                        kp_x_norm = float(single_kp_coords_normalized_row[0])
+                        kp_y_norm = float(single_kp_coords_normalized_row[1])
+                        visibility = 1.0 
+                        if len(single_kp_coords_normalized_row) > 2:
+                            # Assuming the 3rd value is visibility/confidence, already normalized or a flag
+                            visibility = float(single_kp_coords_normalized_row[2]) 
+
+                        # Skip keypoints that are often padding/non-existent in YOLO outputs
+                        # (i.e., at origin with low/zero visibility). Normalized coords are 0-1.
+                        if visibility < 0.1 and abs(kp_x_norm) < 1e-3 and abs(kp_y_norm) < 1e-3:
+                            continue
+                        
+                        current_kps_ls_items.append({
+                            'from_name': kp_from_name, 
+                            'to_name': 'img', 
+                            'type': 'keypointlabels',
+                            'original_width': orig_w,
+                            'original_height': orig_h,
+                            'image_rotation': 0,
+                            'value': {
+                                'x': kp_x_norm * 100.0, # Use normalized value directly
+                                'y': kp_y_norm * 100.0, # Use normalized value directly
+                                'width': 1.0, 
+                                'keypointlabels': [defined_kp_labels_for_class[kp_idx]]
+                            }
+                        })
+                
+                # Store this processed detection (box and its keypoints)
+                if cls_name_str in all_processed_detections:
+                    all_processed_detections[cls_name_str].append({
+                        'confidence': conf_score_val,
+                        'box_ls_item': current_box_ls_item,
+                        'kps_ls_items': current_kps_ls_items
                     })
 
-                if points:
-                    task_results.append({
-                        "id": str(uuid4()),
-                        "from_name": kp_tag,
-                        "to_name": IMAGE_FIELD,
-                        "type": "keypointlabels",
-                        "score": float(det_conf),
-                        "value": {
-                            "points": points,
-                            "x": tlx_pct,
-                            "y": tly_pct,
-                            "width": w_pct,
-                            "height": h_pct
-                        },
-                    })
-                    logger.info("Task %s: kept cls=%d box %d with %d KPs", task_id, cls, det_idx, len(points))
-
-            logger.debug("Task %s: total results = %d", task_id, len(task_results))
-            predictions.append({
-                "result": task_results,
-                "score": float(np.mean([r.get("score", 0.0) for r in task_results]) if task_results else 0.0),
-            })
+            # Filter to best detection per class and build final ls_results for this task
+            final_ls_results_for_task = []
+            for class_key_to_filter in ['face', 'juice_tube']: 
+                detections_of_this_class = all_processed_detections[class_key_to_filter]
+                if detections_of_this_class:
+                    # Sort by confidence, highest first
+                    best_detection = sorted(detections_of_this_class, key=lambda x: x['confidence'], reverse=True)[0]
+                    if best_detection['box_ls_item']:
+                         final_ls_results_for_task.append(best_detection['box_ls_item'])
+                    if best_detection['kps_ls_items']:
+                         final_ls_results_for_task.extend(best_detection['kps_ls_items'])
+            
+            predictions.append({'result': final_ls_results_for_task})
 
         return predictions
 
-    # ------------------------------------------------------------------
-    # Training hook (unused)
-    # ------------------------------------------------------------------
-    def fit(self, **kwargs):  # noqa: D401
-        return {}
+# alias for Label Studio ML entrypoint
+NewModel = YoloPoseBackend
