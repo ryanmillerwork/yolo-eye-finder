@@ -103,6 +103,9 @@ class YoloPoseBackend(LabelStudioMLBase):
                         if kp_idx >= len(defined_kp_labels_for_class):
                             break # Processed all defined keypoints for this class
 
+                        # ADDED LOGGING HERE
+                        print(f"DEBUG YoloPoseBackend: Raw keypoint data for {class_names.get(cls_id_val, '')} detection {i}, keypoint index {kp_idx} ('{defined_kp_labels_for_class[kp_idx]}'): {single_kp_coords_normalized_row}")
+
                         if not (isinstance(single_kp_coords_normalized_row, (list, tuple)) or type(single_kp_coords_normalized_row).__name__ == 'ndarray') or len(single_kp_coords_normalized_row) < 2:
                             continue 
 
@@ -112,6 +115,9 @@ class YoloPoseBackend(LabelStudioMLBase):
                         if len(single_kp_coords_normalized_row) > 2:
                             # Assuming the 3rd value is visibility/confidence, already normalized or a flag
                             visibility = float(single_kp_coords_normalized_row[2]) 
+                        
+                        # ADDED LOGGING HERE
+                        print(f"DEBUG YoloPoseBackend: Derived visibility for '{defined_kp_labels_for_class[kp_idx]}': {visibility}, coords: ({kp_x_norm:.3f}, {kp_y_norm:.3f})")
 
                         # Skip keypoints that are often padding/non-existent in YOLO outputs
                         # (i.e., at origin with low/zero visibility). Normalized coords are 0-1.
