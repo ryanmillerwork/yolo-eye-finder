@@ -160,6 +160,8 @@ def convert_coco_to_yolo(coco, images_dir, project_dir):
 train: images/train
 val: images/val
 
+channels: 1
+
 kpt_shape: [{num_kp}, 3]
 flip_idx: {flip_idx}
 

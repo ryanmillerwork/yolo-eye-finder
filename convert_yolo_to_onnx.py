@@ -1,3 +1,9 @@
+## USE CLI INSTEAD
+
+## (labeling) lab@qpcs-server:~/labeling/bin$ python ../yolo-eye-finder/convert_yolo_to_onnx.py ./yolo11s-pose.pt --imgsz_height 192 --imgsz_width 128
+
+
+
 #!/usr/bin/env python3
 import argparse
 import sys
