@@ -27,7 +27,16 @@ sudo apt install python3 python3-pip python3-venv -y
 ```
 This command installs Python 3, pip for Python 3, and the `venv` module for creating virtual environments.
 
-### 3. Create a Project Directory (Optional)
+### 3. Install Essential System Dependencies
+Some Python packages, like OpenCV (a dependency of `ultralytics`), require system libraries to function correctly.
+
+If you encounter an error like `ImportError: libGL.so.1: cannot open shared object file`, it means a required OpenGL library is missing. Install it using:
+```bash
+sudo apt install -y libgl1
+```
+This is often needed on headless servers or fresh Ubuntu installations (especially newer versions like Ubuntu 24.04 "Noble Numbat").
+
+### 4. Create a Project Directory (Optional)
 If you haven't already, create a directory for your project and navigate into it:
 ```bash
 # mkdir my_project
@@ -35,21 +44,21 @@ If you haven't already, create a directory for your project and navigate into it
 ```
 Place `db_infer_listen.py` inside this directory. Also, ensure your YOLO model file (e.g., `HB-eyes-400_small.pt`) is accessible, for example, in a `./models/` subdirectory.
 
-### 4. Create a Python Virtual Environment
+### 5. Create a Python Virtual Environment
 It's highly recommended to use a virtual environment to manage project-specific dependencies.
 ```bash
 python3 -m venv venv_yolo_pg
 ```
 This creates a virtual environment named `venv_yolo_pg` in your project directory.
 
-### 5. Activate the Virtual Environment
+### 6. Activate the Virtual Environment
 Before installing dependencies or running your script, activate the virtual environment:
 ```bash
 source venv_yolo_pg/bin/activate
 ```
 Your shell prompt should change to indicate that the virtual environment is active (e.g., `(venv_yolo_pg) user@host:...$`).
 
-### 6. Install Required Python Packages
+### 7. Install Required Python Packages
 Install the necessary Python libraries using pip:
 ```bash
 pip install psycopg2-binary python-dotenv Pillow ultralytics
@@ -59,7 +68,7 @@ pip install psycopg2-binary python-dotenv Pillow ultralytics
 - `Pillow`: A Python Imaging Library for opening, manipulating, and saving many different image file formats.
 - `ultralytics`: The library used for YOLO model training and inference. It includes PyTorch as a dependency.
 
-### 7. Create a `.env` File for Database Credentials
+### 8. Create a `.env` File for Database Credentials
 The script `db_infer_listen.py` expects the PostgreSQL password to be stored in an environment variable `PG_PASS`.
 
 Create a file named `.env` in the same directory as the script with the following content:
@@ -68,14 +77,14 @@ PG_PASS='your_actual_database_password'
 ```
 Replace `your_actual_database_password` with your actual PostgreSQL password. Add `.env` to your `.gitignore` file if using version control.
 
-### 8. YOLO Model Configuration
+### 9. YOLO Model Configuration
 The script expects a YOLO model file. Configure its path in `db_infer_listen.py`:
 ```python
 MODEL_PATH = "./models/HB-eyes-400_small.pt" # Adjust if your model path is different
 ```
 Ensure this path points to your trained `.pt` model file.
 
-### 9. Ensure PostgreSQL is Running and Accessible
+### 10. Ensure PostgreSQL is Running and Accessible
 Make sure your PostgreSQL server is:
 - Running.
 - Accessible from the Ubuntu server (check networking, firewall rules).
@@ -83,14 +92,14 @@ Make sure your PostgreSQL server is:
 - Has a user `postgres` with the password specified in `PG_PASS` (or modify `db_user` in the script).
 - Has the table `server_inference` with columns like `server_infer_id`, `input_data` (bytea), and `mime_type`.
 
-### 10. Run the Script
+### 11. Run the Script
 You can now run the Python script:
 ```bash
 python db_infer_listen.py
 ```
 The script will load the model, fetch records, perform batch inference, and print basic results. The `test_ids` list in the script can be modified for testing with specific records. The `BATCH_SIZE` constant can also be adjusted based on system resources.
 
-### 11. Deactivate the Virtual Environment (When Done)
+### 12. Deactivate the Virtual Environment (When Done)
 Once you are finished working, you can deactivate the virtual environment:
 ```bash
 deactivate

@@ -72,21 +72,49 @@ MODEL_PATH = "./models/HB-eyes-400_small.pt"
 IMAGE_SIZE = (192, 128) # imgsz used during training (width, height)
 
 def process_inference_results(batch_ids, batch_results):
-    """Placeholder function to process and print inference results."""
+    """Processes and prints detailed inference results including keypoints."""
     for i, result in enumerate(batch_results):
         server_id = batch_ids[i]
-        print(f"  Results for Record ID {server_id}:")
-        if result.keypoints is not None and len(result.keypoints.xy) > 0:
-            num_poses = len(result.keypoints.xy)
+        print(f"\n  Detailed Results for Record ID {server_id}:")
+
+        if result.keypoints is not None and result.keypoints.data.numel() > 0:
+            # .data gives a tensor like [num_poses, num_keypoints, 2 (x,y)] or [num_poses, num_keypoints, 3 (x,y,conf)]
+            # .xy gives a list of tensors, one per pose, with [num_keypoints, 2 (x,y)]
+            # .xyn gives normalized versions of .xy
+            # .conf gives a list of tensors, one per pose, with [num_keypoints (confidence for each keypoint)]
+            
+            num_poses = result.keypoints.shape[0] # Number of detected poses in this image
             print(f"    Detected {num_poses} pose(s).")
-            # Example: Accessing keypoints for the first detected pose
-            # keypoints_data = result.keypoints[0].data # Tensor of keypoints
-            # print(f"    Keypoints for first pose (raw tensor): {keypoints_data}")
-            # For more detailed keypoint processing, refer to Ultralytics documentation
-            # on the structure of result.keypoints
+
+            for pose_idx in range(num_poses):
+                print(f"      Pose #{pose_idx + 1}:")
+                
+                # Overall confidence for this pose instance (if available directly, e.g. from bounding box confidence)
+                # The `result.boxes` might have overall confidence for each instance if detection part is also active
+                # For pose specifically, often we look at keypoint confidences individually or average them.
+                # We'll access individual keypoint confidences below.
+
+                keypoints_xy_for_pose = result.keypoints.xy[pose_idx] # Tensor of [num_keypoints, 2]
+                keypoints_conf_for_pose = None
+                if result.keypoints.conf is not None:
+                    keypoints_conf_for_pose = result.keypoints.conf[pose_idx] # Tensor of [num_keypoints]
+                
+                num_keypoints_for_pose = keypoints_xy_for_pose.shape[0]
+                print(f"        Number of keypoints: {num_keypoints_for_pose}")
+
+                for kp_idx in range(num_keypoints_for_pose):
+                    x, y = keypoints_xy_for_pose[kp_idx].tolist() # Convert tensor to list [x, y]
+                    confidence = "N/A"
+                    if keypoints_conf_for_pose is not None:
+                        confidence_score = keypoints_conf_for_pose[kp_idx].item() # Convert single-element tensor to float
+                        confidence = f"{confidence_score:.4f}"
+                    
+                    print(f"          Keypoint {kp_idx + 1}: (x={x:.2f}, y={y:.2f}), Confidence: {confidence}")
         else:
-            print("    No poses detected.")
-        # print(result.summary()) # You can print a summary of detections
+            print("    No poses or keypoints detected for this image.")
+        
+        # You can also print the summary which includes bounding boxes if they are part of the output
+        # print(result.summary())
 
 if __name__ == "__main__":
     # Ensure ultralytics is installed: pip install ultralytics
