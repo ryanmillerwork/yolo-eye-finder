@@ -47,14 +47,14 @@ Place `db_infer_listen.py` inside this directory. Also, ensure your YOLO model f
 ### 5. Create a Python Virtual Environment
 It's highly recommended to use a virtual environment to manage project-specific dependencies.
 ```bash
-python3 -m venv venv_yolo_pg
+python3 -m venv yolo_pg
 ```
 This creates a virtual environment named `venv_yolo_pg` in your project directory.
 
 ### 6. Activate the Virtual Environment
 Before installing dependencies or running your script, activate the virtual environment:
 ```bash
-source venv_yolo_pg/bin/activate
+source yolo_pg/bin/activate
 ```
 Your shell prompt should change to indicate that the virtual environment is active (e.g., `(venv_yolo_pg) user@host:...$`).
 

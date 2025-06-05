@@ -67,6 +67,56 @@ def get_inferences_by_ids(server_infer_ids: List[int]) -> List[Any]:
             conn.close()
             print("PostgreSQL connection is closed")
 
+def get_most_recent_inferences(limit: int) -> List[Any]:
+    """
+    Connects to the PostgreSQL database and retrieves the most recent records
+    from the server_inference table, ordered by server_infer_id descending.
+    Records are returned as dictionaries (DictRow).
+
+    Args:
+        limit: The maximum number of records to retrieve.
+
+    Returns:
+        A list of DictRow objects, where each object represents a row.
+        Returns an empty list if no records are found or in case of an error.
+    """
+    load_dotenv()  # Load environment variables from .env file
+
+    db_host = "localhost"
+    db_name = "base"
+    db_user = "postgres"
+    db_password = os.getenv("PG_PASS")
+
+    if not db_password:
+        print("Error: PG_PASS not found in .env file or environment variables.")
+        return []
+
+    conn = None
+    records = []
+    try:
+        conn = psycopg2.connect(
+            host=db_host,
+            database=db_name,
+            user=db_user,
+            password=db_password,
+            cursor_factory=DictCursor
+        )
+        cur = conn.cursor()
+        query = "SELECT * FROM server_inference ORDER BY server_infer_id DESC LIMIT %s"
+        cur.execute(query, (limit,))
+        records = cur.fetchall()
+        return records
+
+    except (Exception, psycopg2.Error) as error:
+        print(f"Error while connecting to PostgreSQL or executing query: {error}")
+        return []
+    finally:
+        if conn:
+            if 'cur' in locals() and cur:
+                cur.close()
+            conn.close()
+            print("PostgreSQL connection is closed")
+
 BATCH_SIZE = 8 # Adjust as needed based on your system memory and performance
 MODEL_PATH = "./models/HB-eyes-400_small.pt"
 IMAGE_SIZE = (192, 128) # imgsz used during training (width, height)
@@ -129,17 +179,15 @@ if __name__ == "__main__":
         print("Please ensure the model path is correct and ultralytics is installed correctly.")
         exit()
 
-    test_ids = [185355]  # Example ID, replace or expand as needed
-    # To test batching, ensure test_ids contains more IDs than BATCH_SIZE, or adjust BATCH_SIZE.
-    # e.g., test_ids = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]
-
-    print(f"Attempting to fetch records for IDs: {test_ids}")
-    all_inference_data = get_inferences_by_ids(test_ids)
+    print(f"Attempting to fetch the {BATCH_SIZE} most recent records for inference...")
+    all_inference_data = get_most_recent_inferences(BATCH_SIZE)
 
     if not all_inference_data:
-        print(f"No data found for server_infer_ids {test_ids} or an error occurred during DB fetch.")
+        print(f"No data found or an error occurred during DB fetch.")
     else:
-        print(f"Found {len(all_inference_data)} record(s) in total.")
+        print(f"Found {len(all_inference_data)} record(s) to process.")
+        # Reverse the list so we process from oldest to newest within the batch
+        all_inference_data.reverse()
 
         current_batch_pil_images = []
         current_batch_ids = []
@@ -177,7 +225,7 @@ if __name__ == "__main__":
 
             # Perform inference if batch is full or it's the last record
             if len(current_batch_pil_images) == BATCH_SIZE or (i == len(all_inference_data) - 1 and len(current_batch_pil_images) > 0):
-                print(f"Performing inference on batch of {len(current_batch_pil_images)} images...")
+                print(f"\nPerforming inference on batch of {len(current_batch_pil_images)} images...")
                 try:
                     # Ultralytics will handle resizing to the model's expected input size if imgsz is specified.
                     # Your model was trained with imgsz=192,128
@@ -200,14 +248,8 @@ if __name__ == "__main__":
                     current_batch_pil_images = []
                     current_batch_ids = []
         
-        if len(current_batch_pil_images) > 0:
-            print(f"Performing inference on the final batch of {len(current_batch_pil_images)} images...")
-            try:
-                batch_results = model(current_batch_pil_images, imgsz=IMAGE_SIZE, verbose=False)
-                print(f"Inference complete for final batch.")
-                process_inference_results(current_batch_ids, batch_results)
-                # ... (placeholder for storing results as above)
-            except Exception as e:
-                print(f"Error during YOLO inference or results processing for final batch: {e}")
+        # The logic to handle the final batch is no longer needed here,
+        # as the main loop condition `i == len(all_inference_data) - 1` covers all cases.
+        # The script now fetches a batch, processes it, and finishes.
 
-        print("All records processed.")
+        print("\nAll fetched records have been processed.")
