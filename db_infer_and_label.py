@@ -84,9 +84,9 @@ def main():
             print(f"  Dimensions after resize: {resized_image.width}W x {resized_image.height}H")
 
             # Step 2: Rotate the now correctly-proportioned image to its proper orientation.
-            # A 90-degree counter-clockwise rotation is needed to create the final portrait image.
-            print("  Step 2: Rotating 90 degrees counter-clockwise to correct final orientation...")
-            pil_image = resized_image.transpose(Image.Transpose.ROTATE_90)
+            # A 90-degree clockwise rotation is needed. This is equivalent to ROTATE_270 in Pillow.
+            print("  Step 2: Rotating 90 degrees clockwise to correct final orientation...")
+            pil_image = resized_image.transpose(Image.Transpose.ROTATE_270)
             print(f"  Dimensions after final rotation: {pil_image.width}W x {pil_image.height}H")
 
         except Exception as e:
