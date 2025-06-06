@@ -86,12 +86,30 @@ def process_inference_results(conn, batch_ids, batch_results, model_obj):
         server_id = batch_ids[i]
         result_summary = ""
 
-        if result.keypoints is not None and result.keypoints.data.numel() > 0:
+        # Check for both keypoints AND boxes to ensure we have a full detection
+        if result.keypoints is not None and result.boxes is not None and result.boxes.data.numel() > 0:
             num_poses = result.keypoints.shape[0]
             all_poses_data = []
             highest_avg_confidence = 0.0
 
             for pose_idx in range(num_poses):
+                # --- Bounding Box Data ---
+                box_data = result.boxes[pose_idx]
+                box_coords = box_data.xyxy[0].tolist() # [x1, y1, x2, y2]
+                box_conf = box_data.conf[0].item()
+                box_class_id = int(box_data.cls[0].item())
+                
+                box_info = {
+                    "x1": round(box_coords[0], 2),
+                    "y1": round(box_coords[1], 2),
+                    "x2": round(box_coords[2], 2),
+                    "y2": round(box_coords[3], 2),
+                    "confidence": round(box_conf, 4),
+                    "class_id": box_class_id,
+                    "class_name": model_obj.names.get(box_class_id, 'unknown')
+                }
+
+                # --- Keypoint Data ---
                 keypoints_xy = result.keypoints.xy[pose_idx]
                 keypoints_conf = result.keypoints.conf[pose_idx] if result.keypoints.conf is not None else [0] * len(keypoints_xy)
                 
@@ -116,6 +134,7 @@ def process_inference_results(conn, batch_ids, batch_results, model_obj):
                 all_poses_data.append({
                     "pose_index": pose_idx,
                     "avg_confidence": round(avg_confidence, 4),
+                    "box": box_info,
                     "keypoints": keypoints_list
                 })
 

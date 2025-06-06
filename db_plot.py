@@ -41,6 +41,15 @@ def draw_annotations(image, infer_label_json: str):
 
     for pose in poses:
         keypoints = pose.get("keypoints", [])
+        
+        # --- Draw Bounding Box ---
+        box = pose.get("box")
+        if box:
+            x1, y1, x2, y2 = int(box['x1']), int(box['y1']), int(box['x2']), int(box['y2'])
+            # Color BGR, so (0, 0, 255) is bright red
+            cv2.rectangle(cv2_image, (x1, y1), (x2, y2), color=(0, 0, 255), thickness=1)
+
+        # --- Draw Keypoints ---
         for kp in keypoints:
             # Ensure keypoint has coordinates and confidence > 0
             if 'x' in kp and 'y' in kp and kp.get('confidence', 0) > 0:
