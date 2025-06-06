@@ -5,7 +5,6 @@ from dotenv import load_dotenv
 from typing import List, Any
 import io # For in-memory byte streams
 import json # To format results for the database
-import time # For benchmarking
 from PIL import Image # For handling image data; pip install Pillow
 from ultralytics import YOLO # For YOLO model inference; pip install ultralytics
 
@@ -157,6 +156,7 @@ def update_inference_record(server_id: int, model_name: str, infer_label: str, c
                 cur.close()
             conn.close()
 
+BATCH_SIZE = 64 # Optimal batch size determined from benchmarking
 MODEL_PATH = "./models/HB-eyes-400_small.pt"
 IMAGE_SIZE = (192, 128) # imgsz used during training (width, height)
 CONF_THRESHOLD = 0.1 # Lowered confidence threshold for detection. Default is 0.25
@@ -238,60 +238,58 @@ if __name__ == "__main__":
         print("Please ensure the model path is correct and ultralytics is installed correctly.")
         exit()
 
-    BENCHMARK_BATCH_SIZES = [2, 4, 8, 16, 32, 64, 128]
-    print("\n--- Starting Batch Size Benchmark ---")
+    print(f"Attempting to fetch the {BATCH_SIZE} most recent records for inference...")
+    all_inference_data = get_most_recent_inferences(BATCH_SIZE)
 
-    for batch_size in BENCHMARK_BATCH_SIZES:
-        print(f"\n--- Testing Batch Size: {batch_size} ---")
-        
-        print(f"Attempting to fetch {batch_size} most recent records for inference...")
-        all_inference_data = get_most_recent_inferences(batch_size)
-
-        if not all_inference_data or len(all_inference_data) < batch_size:
-            print(f"Could not fetch enough records ({len(all_inference_data)} found) for batch size {batch_size}. Skipping.")
-            continue
-        
+    if not all_inference_data:
+        print(f"No data found or an error occurred during DB fetch.")
+    else:
         print(f"Found {len(all_inference_data)} record(s) to process.")
+        # Reverse the list so we process from oldest to newest within the batch
         all_inference_data.reverse()
 
         current_batch_pil_images = []
         current_batch_ids = []
 
-        for record in all_inference_data:
+        for i, record in enumerate(all_inference_data):
             server_id = record['server_infer_id']
+            print(f"Processing record ID: {server_id} ({i+1}/{len(all_inference_data)})")
+
             mime_type = record.get('mime_type')
             input_data_bytes = record.get('input_data')
 
             if mime_type and input_data_bytes and mime_type.startswith('image/'):
                 try:
                     image_stream = io.BytesIO(input_data_bytes)
-                    img = Image.open(image_stream).convert("RGB")
+                    img = Image.open(image_stream).convert("RGB") 
                     current_batch_pil_images.append(img)
                     current_batch_ids.append(server_id)
+                    print(f"  Image from record {server_id} added to batch. Batch size: {len(current_batch_pil_images)}/{BATCH_SIZE}")
+
                 except Exception as e:
-                    print(f"  Warning: Could not process image for record {server_id}, skipping. Error: {e}")
-        
-        if len(current_batch_pil_images) < batch_size:
-            print(f"Only prepared {len(current_batch_pil_images)} valid images out of {batch_size} records. Skipping benchmark for this size to ensure consistency.")
-            continue
+                    print(f"  Error processing image data for record ID {server_id}: {e}")
+                    continue
+            else:
+                if not mime_type or not mime_type.startswith('image/'):
+                    print(f"  Record ID {server_id}: Mime type {mime_type if mime_type else 'N/A'} is not an image. Skipping.")
+                if not input_data_bytes:
+                    print(f"  Record ID {server_id}: Input data is missing. Skipping.")
+                continue
 
-        try:
-            print(f"Performing inference on batch of {len(current_batch_pil_images)} images...")
-            
-            start_time = time.perf_counter()
-            batch_results = model(current_batch_pil_images, imgsz=IMAGE_SIZE, conf=CONF_THRESHOLD, verbose=False)
-            end_time = time.perf_counter()
-            
-            total_time = end_time - start_time
-            time_per_image = total_time / len(current_batch_pil_images)
+            # Perform inference if batch is full or it's the last record
+            if len(current_batch_pil_images) == BATCH_SIZE or (i == len(all_inference_data) - 1 and len(current_batch_pil_images) > 0):
+                print(f"\nPerforming inference on batch of {len(current_batch_pil_images)} images...")
+                try:
+                    batch_results = model(current_batch_pil_images, imgsz=IMAGE_SIZE, conf=CONF_THRESHOLD, verbose=False)
+                    print(f"Inference complete for batch.")
+                    
+                    process_inference_results(current_batch_ids, batch_results, model)
 
-            print(f"Inference complete for batch.")
-            print(f"  Total Batch Inference Time: {total_time:.4f} seconds")
-            print(f"  Average Time Per Image: {time_per_image:.4f} seconds")
-            
-            process_inference_results(current_batch_ids, batch_results, model)
+                except Exception as e:
+                    print(f"Error during YOLO inference or results processing: {e}")
+                finally:
+                    # Clear the batch for the next set of images
+                    current_batch_pil_images = []
+                    current_batch_ids = []
 
-        except Exception as e:
-            print(f"Error during YOLO inference or results processing: {e}")
-
-    print("\n--- Benchmark Complete ---")
+        print("\nAll fetched records have been processed.")
