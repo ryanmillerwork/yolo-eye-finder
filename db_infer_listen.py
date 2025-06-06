@@ -4,6 +4,7 @@ from psycopg2.extras import DictCursor
 from dotenv import load_dotenv
 from typing import List, Any
 import io # For in-memory byte streams
+import json # To format results for the database
 from PIL import Image # For handling image data; pip install Pillow
 from ultralytics import YOLO # For YOLO model inference; pip install ultralytics
 
@@ -117,54 +118,111 @@ def get_most_recent_inferences(limit: int) -> List[Any]:
             conn.close()
             print("PostgreSQL connection is closed")
 
+def update_inference_record(server_id: int, model_name: str, infer_label: str, confidence: float):
+    """
+    Connects to the PostgreSQL database and updates a record in the
+    server_inference table with the results of an inference.
+    """
+    load_dotenv()
+    db_password = os.getenv("PG_PASS")
+    if not db_password:
+        print(f"Error updating record {server_id}: PG_PASS not found.")
+        return
+
+    conn = None
+    try:
+        conn = psycopg2.connect(
+            host="localhost",
+            database="base",
+            user="postgres",
+            password=db_password
+        )
+        cur = conn.cursor()
+        
+        sql = """
+            UPDATE server_inference
+            SET model_file = %s, infer_label = %s, confidence = %s
+            WHERE server_infer_id = %s
+        """
+        cur.execute(sql, (model_name, infer_label, confidence, server_id))
+        conn.commit()
+        print(f"  Successfully updated record for server_infer_id: {server_id}")
+
+    except (Exception, psycopg2.Error) as error:
+        print(f"Error while updating record {server_id}: {error}")
+    finally:
+        if conn:
+            if 'cur' in locals() and cur:
+                cur.close()
+            conn.close()
+
 BATCH_SIZE = 8 # Adjust as needed based on your system memory and performance
 MODEL_PATH = "./models/HB-eyes-400_small.pt"
 IMAGE_SIZE = (192, 128) # imgsz used during training (width, height)
 
-def process_inference_results(batch_ids, batch_results):
-    """Processes and prints detailed inference results including keypoints."""
+def process_inference_results(batch_ids, batch_results, model_obj):
+    """
+    Processes inference results, prints them, formats them for the DB,
+    and calls the update function.
+    """
+    model_name = os.path.basename(MODEL_PATH)
+
     for i, result in enumerate(batch_results):
         server_id = batch_ids[i]
         print(f"\n  Detailed Results for Record ID {server_id}:")
 
         if result.keypoints is not None and result.keypoints.data.numel() > 0:
-            # .data gives a tensor like [num_poses, num_keypoints, 2 (x,y)] or [num_poses, num_keypoints, 3 (x,y,conf)]
-            # .xy gives a list of tensors, one per pose, with [num_keypoints, 2 (x,y)]
-            # .xyn gives normalized versions of .xy
-            # .conf gives a list of tensors, one per pose, with [num_keypoints (confidence for each keypoint)]
-            
-            num_poses = result.keypoints.shape[0] # Number of detected poses in this image
+            num_poses = result.keypoints.shape[0]
             print(f"    Detected {num_poses} pose(s).")
 
+            # Prepare data for JSON output
+            all_poses_data = []
+            highest_avg_confidence = 0.0
+
             for pose_idx in range(num_poses):
-                print(f"      Pose #{pose_idx + 1}:")
+                keypoints_xy = result.keypoints.xy[pose_idx]
+                keypoints_conf = result.keypoints.conf[pose_idx] if result.keypoints.conf is not None else [0] * len(keypoints_xy)
                 
-                # Overall confidence for this pose instance (if available directly, e.g. from bounding box confidence)
-                # The `result.boxes` might have overall confidence for each instance if detection part is also active
-                # For pose specifically, often we look at keypoint confidences individually or average them.
-                # We'll access individual keypoint confidences below.
-
-                keypoints_xy_for_pose = result.keypoints.xy[pose_idx] # Tensor of [num_keypoints, 2]
-                keypoints_conf_for_pose = None
-                if result.keypoints.conf is not None:
-                    keypoints_conf_for_pose = result.keypoints.conf[pose_idx] # Tensor of [num_keypoints]
+                keypoints_list = []
+                confidences = []
+                for kp_idx, (x, y) in enumerate(keypoints_xy):
+                    conf = keypoints_conf[kp_idx].item()
+                    confidences.append(conf)
+                    keypoint_data = {
+                        'kp_index': kp_idx,
+                        'name': model_obj.names.get(kp_idx, 'unknown'),
+                        'x': round(x.item(), 2),
+                        'y': round(y.item(), 2),
+                        'confidence': round(conf, 4)
+                    }
+                    keypoints_list.append(keypoint_data)
                 
-                num_keypoints_for_pose = keypoints_xy_for_pose.shape[0]
-                print(f"        Number of keypoints: {num_keypoints_for_pose}")
+                avg_confidence = sum(confidences) / len(confidences) if confidences else 0.0
+                if avg_confidence > highest_avg_confidence:
+                    highest_avg_confidence = avg_confidence
 
-                for kp_idx in range(num_keypoints_for_pose):
-                    x, y = keypoints_xy_for_pose[kp_idx].tolist() # Convert tensor to list [x, y]
-                    confidence = "N/A"
-                    if keypoints_conf_for_pose is not None:
-                        confidence_score = keypoints_conf_for_pose[kp_idx].item() # Convert single-element tensor to float
-                        confidence = f"{confidence_score:.4f}"
-                    
-                    print(f"          Keypoint {kp_idx + 1}: (x={x:.2f}, y={y:.2f}), Confidence: {confidence}")
+                all_poses_data.append({
+                    "pose_index": pose_idx,
+                    "avg_confidence": round(avg_confidence, 4),
+                    "keypoints": keypoints_list
+                })
+
+            # The final JSON string to be stored in `infer_label`
+            infer_label_json = json.dumps({"poses": all_poses_data}, indent=2)
+
+            # For the single 'confidence' column, we use the highest average confidence among all detected poses.
+            final_confidence = highest_avg_confidence
+
+            print(f"    Formatted for DB -> Model: {model_name}, Confidence: {final_confidence:.4f}")
+            # print(f"    Infer Label (JSON): {infer_label_json}") # Uncomment to debug the JSON string
+
+            # Update the record in the database
+            update_inference_record(server_id, model_name, infer_label_json, final_confidence)
+
         else:
             print("    No poses or keypoints detected for this image.")
-        
-        # You can also print the summary which includes bounding boxes if they are part of the output
-        # print(result.summary())
+            # Optionally, update the DB to indicate no detection
+            # update_inference_record(server_id, model_name, json.dumps({"poses": []}), 0.0)
 
 if __name__ == "__main__":
     # Ensure ultralytics is installed: pip install ultralytics
@@ -232,14 +290,7 @@ if __name__ == "__main__":
                     batch_results = model(current_batch_pil_images, imgsz=IMAGE_SIZE, verbose=False) # verbose=False to reduce console output
                     print(f"Inference complete for batch.")
                     
-                    process_inference_results(current_batch_ids, batch_results)
-
-                    # Placeholder for storing results back to DB
-                    # for res_idx, result_obj in enumerate(batch_results):
-                    #     original_server_id = current_batch_ids[res_idx]
-                    #     # extracted_keypoints = ... # extract relevant data from result_obj.keypoints
-                    #     # store_inference_results_to_db(original_server_id, extracted_keypoints)
-                    # print(f"  (Placeholder) Inference results for batch would be stored.")
+                    process_inference_results(current_batch_ids, batch_results, model)
 
                 except Exception as e:
                     print(f"Error during YOLO inference or results processing: {e}")
