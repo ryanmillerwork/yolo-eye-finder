@@ -8,6 +8,7 @@ import json # To format results for the database
 from PIL import Image # For handling image data; pip install Pillow
 from ultralytics import YOLO # For YOLO model inference; pip install ultralytics
 import torch # To check for CUDA availability
+import time # For benchmarking
 
 def get_unprocessed_inferences(conn, limit: int) -> List[Any]:
     """
@@ -213,8 +214,14 @@ def main():
             
             print(f"Performing inference on batch of {len(current_batch_pil_images)} images...")
             try:
+                start_time = time.perf_counter()
                 batch_results = model(current_batch_pil_images, imgsz=IMAGE_SIZE, conf=CONF_THRESHOLD, verbose=False)
-                print(f"Inference complete. Processing and updating results...")
+                end_time = time.perf_counter()
+                
+                total_time = end_time - start_time
+                time_per_image = total_time / len(current_batch_pil_images) if current_batch_pil_images else 0
+
+                print(f"Inference complete in {total_time:.4f}s ({time_per_image:.4f}s/image). Processing and updating results...")
                 process_inference_results(conn, current_batch_ids, batch_results, model)
                 total_processed += len(current_batch_ids)
 
