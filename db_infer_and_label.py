@@ -6,6 +6,7 @@ from psycopg2.extras import DictCursor
 from dotenv import load_dotenv
 import io
 from PIL import Image
+import numpy as np # For robust image rotation
 from ultralytics import YOLO
 import cv2  # OpenCV is used for color conversion
 
@@ -71,13 +72,15 @@ def main():
         print("Image data found. Preparing for inference...")
         try:
             image_stream = io.BytesIO(input_data_bytes)
-            pil_image = Image.open(image_stream).convert("RGB")
+            unprocessed_image = Image.open(image_stream).convert("RGB")
             
-            # --- FIX: Rotate the image 90 degrees clockwise to correct orientation ---
-            # The original image appears to be saved with swapped width/height metadata.
-            # Transpose.ROTATE_270 is equivalent to a 90-degree clockwise rotation.
-            print("Applying 90-degree clockwise rotation to correct image orientation.")
-            pil_image = pil_image.transpose(Image.Transpose.ROTATE_270)
+            # --- FIX: Correct image orientation and aspect ratio ---
+            # The image data seems to be saved with swapped width/height, causing
+            # incorrect rotation and aspect ratio. A numpy rotation fixes both.
+            print("Correcting image orientation and aspect ratio via numpy...")
+            np_image = np.array(unprocessed_image)
+            np_rotated = np.rot90(np_image, k=-1) # k=-1 is a 90-degree clockwise rotation
+            pil_image = Image.fromarray(np_rotated)
 
         except Exception as e:
             print(f"Failed to load or process image from database bytes for ID {server_id_to_process}: {e}", file=sys.stderr)
