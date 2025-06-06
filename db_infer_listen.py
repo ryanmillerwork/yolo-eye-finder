@@ -7,6 +7,7 @@ import io # For in-memory byte streams
 import json # To format results for the database
 from PIL import Image # For handling image data; pip install Pillow
 from ultralytics import YOLO # For YOLO model inference; pip install ultralytics
+import torch # To check for CUDA availability
 
 def get_unprocessed_inferences(conn, limit: int) -> List[Any]:
     """
@@ -138,9 +139,19 @@ def main():
         print("Error: PG_PASS not found in .env file or environment variables.")
         return
 
-    print(f"Loading YOLO model from: {MODEL_PATH}")
+    # --- Hardware Check ---
+    device = 'cuda' if torch.cuda.is_available() else 'cpu'
+    print(f"Hardware check: PyTorch is using device: {device}")
+    if device == 'cuda':
+        print(f"  GPU Name: {torch.cuda.get_device_name(0)}")
+    else:
+        print("  WARNING: CUDA-enabled GPU not found. Falling back to CPU. Inference will be significantly slower.")
+        print("  (To enable GPU, ensure NVIDIA drivers and CUDA are installed and that your PyTorch version supports CUDA.)")
+
+    print(f"\nLoading YOLO model from: {MODEL_PATH}")
     try:
         model = YOLO(MODEL_PATH)
+        # The model will automatically move to the detected device (GPU or CPU)
         print("YOLO model loaded successfully.")
     except Exception as e:
         print(f"Error loading YOLO model: {e}")
