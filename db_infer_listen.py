@@ -159,6 +159,7 @@ def update_inference_record(server_id: int, model_name: str, infer_label: str, c
 BATCH_SIZE = 8 # Adjust as needed based on your system memory and performance
 MODEL_PATH = "./models/HB-eyes-400_small.pt"
 IMAGE_SIZE = (192, 128) # imgsz used during training (width, height)
+CONF_THRESHOLD = 0.1 # Lowered confidence threshold for detection. Default is 0.25
 
 def process_inference_results(batch_ids, batch_results, model_obj):
     """
@@ -222,7 +223,7 @@ def process_inference_results(batch_ids, batch_results, model_obj):
         else:
             print("    No poses or keypoints detected for this image.")
             # Optionally, update the DB to indicate no detection
-            # update_inference_record(server_id, model_name, json.dumps({"poses": []}), 0.0)
+            update_inference_record(server_id, model_name, json.dumps({"poses": []}), 0.0)
 
 if __name__ == "__main__":
     # Ensure ultralytics is installed: pip install ultralytics
@@ -287,7 +288,8 @@ if __name__ == "__main__":
                 try:
                     # Ultralytics will handle resizing to the model's expected input size if imgsz is specified.
                     # Your model was trained with imgsz=192,128
-                    batch_results = model(current_batch_pil_images, imgsz=IMAGE_SIZE, verbose=False) # verbose=False to reduce console output
+                    # We add a confidence threshold `conf` to the call.
+                    batch_results = model(current_batch_pil_images, imgsz=IMAGE_SIZE, conf=CONF_THRESHOLD, verbose=False)
                     print(f"Inference complete for batch.")
                     
                     process_inference_results(current_batch_ids, batch_results, model)
