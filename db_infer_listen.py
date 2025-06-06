@@ -177,9 +177,18 @@ def main():
 
                 if mime_type and input_data_bytes and mime_type.startswith('image/'):
                     try:
+                        # --- FIX: Two-step correction for rotation AND distortion ---
                         image_stream = io.BytesIO(input_data_bytes)
-                        img = Image.open(image_stream).convert("RGB") 
-                        current_batch_pil_images.append(img)
+                        unprocessed_image = Image.open(image_stream).convert("RGB")
+                        
+                        # Step 1: Resize to undo distortion
+                        undistorted_dims = (unprocessed_image.height, unprocessed_image.width)
+                        resized_image = unprocessed_image.resize(undistorted_dims)
+
+                        # Step 2: Rotate to correct orientation
+                        pil_image = resized_image.transpose(Image.Transpose.ROTATE_270)
+                        
+                        current_batch_pil_images.append(pil_image)
                         current_batch_ids.append(server_id)
                     except Exception as e:
                         print(f"ID {server_id}: Error preparing image, skipping. Error: {e}")
