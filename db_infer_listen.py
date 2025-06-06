@@ -146,9 +146,10 @@ def update_inference_record(server_id: int, model_name: str, infer_label: str, c
         """
         cur.execute(sql, (model_name, infer_label, confidence, server_id))
         conn.commit()
-        print(f"  Successfully updated record for server_infer_id: {server_id}")
+        # print(f"  Successfully updated record for server_infer_id: {server_id}") # Silenced for cleaner logs
 
     except (Exception, psycopg2.Error) as error:
+        # Keep error logging
         print(f"Error while updating record {server_id}: {error}")
     finally:
         if conn:
@@ -163,20 +164,18 @@ CONF_THRESHOLD = 0.1 # Lowered confidence threshold for detection. Default is 0.
 
 def process_inference_results(batch_ids, batch_results, model_obj):
     """
-    Processes inference results, prints them, formats them for the DB,
-    and calls the update function.
+    Processes inference results, formats them for the DB, calls the
+    update function, and prints a concise one-line summary.
     """
     model_name = os.path.basename(MODEL_PATH)
 
     for i, result in enumerate(batch_results):
         server_id = batch_ids[i]
-        print(f"\n  Detailed Results for Record ID {server_id}:")
+        result_summary = ""
 
         if result.keypoints is not None and result.keypoints.data.numel() > 0:
             num_poses = result.keypoints.shape[0]
-            print(f"    Detected {num_poses} pose(s).")
-
-            # Prepare data for JSON output
+            
             all_poses_data = []
             highest_avg_confidence = 0.0
 
@@ -208,22 +207,18 @@ def process_inference_results(batch_ids, batch_results, model_obj):
                     "keypoints": keypoints_list
                 })
 
-            # The final JSON string to be stored in `infer_label`
             infer_label_json = json.dumps({"poses": all_poses_data}, indent=2)
-
-            # For the single 'confidence' column, we use the highest average confidence among all detected poses.
             final_confidence = highest_avg_confidence
-
-            print(f"    Formatted for DB -> Model: {model_name}, Confidence: {final_confidence:.4f}")
-            # print(f"    Infer Label (JSON): {infer_label_json}") # Uncomment to debug the JSON string
-
-            # Update the record in the database
+            
+            result_summary = f"Detected {num_poses} pose(s) with confidence {final_confidence:.4f}. DB updated."
             update_inference_record(server_id, model_name, infer_label_json, final_confidence)
 
         else:
-            print("    No poses or keypoints detected for this image.")
-            # Optionally, update the DB to indicate no detection
-            update_inference_record(server_id, model_name, json.dumps({"poses": []}), 0.0)
+            infer_label_json = json.dumps({"poses": []})
+            result_summary = "No poses detected. DB updated."
+            update_inference_record(server_id, model_name, infer_label_json, 0.0)
+        
+        print(f"ID {server_id}: {result_summary}")
 
 if __name__ == "__main__":
     # Ensure ultralytics is installed: pip install ultralytics
@@ -245,7 +240,6 @@ if __name__ == "__main__":
         print(f"No data found or an error occurred during DB fetch.")
     else:
         print(f"Found {len(all_inference_data)} record(s) to process.")
-        # Reverse the list so we process from oldest to newest within the batch
         all_inference_data.reverse()
 
         current_batch_pil_images = []
@@ -253,7 +247,7 @@ if __name__ == "__main__":
 
         for i, record in enumerate(all_inference_data):
             server_id = record['server_infer_id']
-            print(f"Processing record ID: {server_id} ({i+1}/{len(all_inference_data)})")
+            # print(f"Processing record ID: {server_id} ({i+1}/{len(all_inference_data)})") # Silenced for cleaner logs
 
             mime_type = record.get('mime_type')
             input_data_bytes = record.get('input_data')
@@ -264,7 +258,7 @@ if __name__ == "__main__":
                     img = Image.open(image_stream).convert("RGB") 
                     current_batch_pil_images.append(img)
                     current_batch_ids.append(server_id)
-                    print(f"  Image from record {server_id} added to batch. Batch size: {len(current_batch_pil_images)}/{BATCH_SIZE}")
+                    # print(f"  Image from record {server_id} added to batch. Batch size: {len(current_batch_pil_images)}/{BATCH_SIZE}") # Silenced
 
                 except Exception as e:
                     print(f"  Error processing image data for record ID {server_id}: {e}")
@@ -278,18 +272,19 @@ if __name__ == "__main__":
 
             # Perform inference if batch is full or it's the last record
             if len(current_batch_pil_images) == BATCH_SIZE or (i == len(all_inference_data) - 1 and len(current_batch_pil_images) > 0):
-                print(f"\nPerforming inference on batch of {len(current_batch_pil_images)} images...")
-                try:
-                    batch_results = model(current_batch_pil_images, imgsz=IMAGE_SIZE, conf=CONF_THRESHOLD, verbose=False)
-                    print(f"Inference complete for batch.")
-                    
-                    process_inference_results(current_batch_ids, batch_results, model)
+                if current_batch_pil_images: # Ensure batch is not empty
+                    print(f"\nPerforming inference on batch of {len(current_batch_pil_images)} images...")
+                    try:
+                        batch_results = model(current_batch_pil_images, imgsz=IMAGE_SIZE, conf=CONF_THRESHOLD, verbose=False)
+                        print(f"Inference complete. Processing and updating results...")
+                        
+                        process_inference_results(current_batch_ids, batch_results, model)
 
-                except Exception as e:
-                    print(f"Error during YOLO inference or results processing: {e}")
-                finally:
-                    # Clear the batch for the next set of images
-                    current_batch_pil_images = []
-                    current_batch_ids = []
+                    except Exception as e:
+                        print(f"Error during YOLO inference or results processing: {e}")
+                    finally:
+                        # Clear the batch for the next set of images
+                        current_batch_pil_images = []
+                        current_batch_ids = []
 
         print("\nAll fetched records have been processed.")
