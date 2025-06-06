@@ -75,15 +75,19 @@ def main():
             unprocessed_image = Image.open(image_stream).convert("RGB")
             print(f"  Dimensions as read from file metadata: {unprocessed_image.width}W x {unprocessed_image.height}H")
             
-            # --- FIX: Reinterpret raw bytes with swapped dimensions to fix distortion ---
-            # The image data is distorted because the width/height metadata in the file
-            # is swapped from the actual pixel layout. We correct this by rebuilding
-            # the image from its raw data using the correct (swapped) dimensions.
-            print("  Reconstructing image from raw bytes with swapped dimensions...")
-            raw_bytes = unprocessed_image.tobytes()
-            correct_dims = (unprocessed_image.height, unprocessed_image.width) # Swap dimensions
-            pil_image = Image.frombytes('RGB', correct_dims, raw_bytes)
-            print(f"  Dimensions after reconstruction: {pil_image.width}W x {pil_image.height}H")
+            # --- FIX: Two-step correction for rotation AND distortion ---
+            # Step 1: Resize the image to its "pre-distortion" aspect ratio.
+            # The distorted dimensions are (W, H), the original content dimensions were likely (H, W).
+            print("  Step 1: Resizing to undo distortion...")
+            undistorted_dims = (unprocessed_image.height, unprocessed_image.width)
+            resized_image = unprocessed_image.resize(undistorted_dims)
+            print(f"  Dimensions after resize: {resized_image.width}W x {resized_image.height}H")
+
+            # Step 2: Rotate the now correctly-proportioned image to its proper orientation.
+            # A 90-degree counter-clockwise rotation is needed.
+            print("  Step 2: Rotating to correct orientation...")
+            pil_image = resized_image.transpose(Image.Transpose.ROTATE_90)
+            print(f"  Dimensions after final rotation: {pil_image.width}W x {pil_image.height}H")
 
         except Exception as e:
             print(f"Failed to load or process image from database bytes for ID {server_id_to_process}: {e}", file=sys.stderr)
