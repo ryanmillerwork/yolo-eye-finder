@@ -84,9 +84,9 @@ def main():
             print(f"  Dimensions after resize: {resized_image.width}W x {resized_image.height}H")
 
             # Step 2: Rotate the now correctly-proportioned image to its proper orientation.
-            # The image is now upside down, so a 180-degree rotation is needed.
-            print("  Step 2: Rotating 180 degrees to correct final orientation...")
-            pil_image = resized_image.transpose(Image.Transpose.ROTATE_180)
+            # A 90-degree counter-clockwise rotation is needed to create the final portrait image.
+            print("  Step 2: Rotating 90 degrees counter-clockwise to correct final orientation...")
+            pil_image = resized_image.transpose(Image.Transpose.ROTATE_90)
             print(f"  Dimensions after final rotation: {pil_image.width}W x {pil_image.height}H")
 
         except Exception as e:
