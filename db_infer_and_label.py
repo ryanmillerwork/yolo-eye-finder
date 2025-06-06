@@ -73,14 +73,12 @@ def main():
         try:
             image_stream = io.BytesIO(input_data_bytes)
             unprocessed_image = Image.open(image_stream).convert("RGB")
+            print(f"  Dimensions after initial load: {unprocessed_image.width}W x {unprocessed_image.height}H")
             
-            # --- FIX: Correct image orientation and aspect ratio ---
-            # The image data seems to be saved with swapped width/height, causing
-            # incorrect rotation and aspect ratio. A numpy rotation fixes both.
-            print("Correcting image orientation and aspect ratio via numpy...")
-            np_image = np.array(unprocessed_image)
-            np_rotated = np.rot90(np_image, k=-1) # k=-1 is a 90-degree clockwise rotation
-            pil_image = Image.fromarray(np_rotated)
+            # --- FIX: Attempt to correct image orientation ---
+            print("  Applying 90-degree clockwise rotation to correct orientation...")
+            pil_image = unprocessed_image.transpose(Image.Transpose.ROTATE_270)
+            print(f"  Dimensions after rotation: {pil_image.width}W x {pil_image.height}H")
 
         except Exception as e:
             print(f"Failed to load or process image from database bytes for ID {server_id_to_process}: {e}", file=sys.stderr)
@@ -106,6 +104,9 @@ def main():
         # Create a Pillow Image from the annotated NumPy array
         final_image = Image.fromarray(annotated_image_rgb)
         
+        # Log final dimensions before saving
+        print(f"  Final image dimensions before saving: {final_image.width}W x {final_image.height}H")
+
         # Save the final image
         final_image.save(OUTPUT_FILENAME)
         print(f"Successfully saved annotated image to '{OUTPUT_FILENAME}'")
