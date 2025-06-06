@@ -72,8 +72,15 @@ def main():
         try:
             image_stream = io.BytesIO(input_data_bytes)
             pil_image = Image.open(image_stream).convert("RGB")
+            
+            # --- FIX: Rotate the image 90 degrees clockwise to correct orientation ---
+            # The original image appears to be saved with swapped width/height metadata.
+            # Transpose.ROTATE_270 is equivalent to a 90-degree clockwise rotation.
+            print("Applying 90-degree clockwise rotation to correct image orientation.")
+            pil_image = pil_image.transpose(Image.Transpose.ROTATE_270)
+
         except Exception as e:
-            print(f"Failed to load image from database bytes for ID {server_id_to_process}: {e}", file=sys.stderr)
+            print(f"Failed to load or process image from database bytes for ID {server_id_to_process}: {e}", file=sys.stderr)
             return 1
         
         # --- Run Inference and Plot Results ---
