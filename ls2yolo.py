@@ -47,8 +47,24 @@ def convert_ls_to_coco(ls_json, xml_path):
     ann_id = 0
     for task in tqdm.tqdm(tasks, desc="LS→COCO"):
         img_id = task['id']
+        
+        # Check if task has annotations
+        if not task.get('annotations') or not task['annotations']:
+            print(f"\nWarning: Task {img_id} has no annotations, skipping...")
+            continue
+            
         res = task['annotations'][0]['result']
-        w, h = res[0]['original_width'], res[0]['original_height']
+        if not res:
+            print(f"\nWarning: Task {img_id} has empty result list, skipping...")
+            continue
+            
+        try:
+            w, h = res[0]['original_width'], res[0]['original_height']
+        except (IndexError, KeyError) as e:
+            print(f"\nError processing task {img_id}:")
+            print(f"Result data: {res}")
+            raise
+            
         fname = pathlib.Path(task['data']['image']).name
         images.append({'id': img_id, 'file_name': fname, 'width': w, 'height': h})
         by_tool = {}
