@@ -5,7 +5,8 @@ import psycopg2
 from psycopg2.extras import DictCursor
 from dotenv import load_dotenv
 import io
-from PIL import Image
+import json
+from PIL import Image, ImageDraw
 import numpy as np # For robust image rotation
 from ultralytics import YOLO
 import cv2  # OpenCV is used for color conversion
@@ -20,6 +21,17 @@ OUTPUT_DIRS = {
     'inference': os.path.join(BASE_OUTPUT_DIR, "inference"),
     'save-only': os.path.join(BASE_OUTPUT_DIR, "save-only"),
     'plot-stored': os.path.join(BASE_OUTPUT_DIR, "plot-stored")
+}
+
+# Colors for plotting stored labels
+COLORS = {
+    'face_box': 'orange',
+    'juice_tube_box': 'green',
+    'left_pupil': 'red',
+    'right_pupil': 'green',
+    'nose_bridge': '#8A2BE2',  # blue-purple
+    'spout_top': '#8B008B',    # red-purple
+    'spout_bottom': 'lightblue'
 }
 
 def parse_id_specification(id_args):
@@ -116,6 +128,79 @@ def correct_image_orientation(image):
     
     return corrected_image
 
+def draw_stored_labels(image, labels_json, confidence_threshold=0.5):
+    """
+    Draw stored labels (boxes and keypoints) on the image.
+    
+    Args:
+        image (PIL.Image): The image to draw on
+        labels_json (str): JSON string containing the stored labels
+        confidence_threshold (float): Minimum confidence to draw elements
+        
+    Returns:
+        PIL.Image: Image with labels drawn
+    """
+    try:
+        labels_data = json.loads(labels_json)
+    except (json.JSONDecodeError, TypeError) as e:
+        print(f"Error parsing labels JSON: {e}")
+        return image
+    
+    # Create a copy of the image to draw on
+    annotated_image = image.copy()
+    draw = ImageDraw.Draw(annotated_image)
+    
+    poses = labels_data.get('poses', [])
+    
+    for pose in poses:
+        # Draw bounding box
+        box = pose.get('box', {})
+        if box.get('confidence', 0) > confidence_threshold:
+            x1, y1, x2, y2 = box['x1'], box['y1'], box['x2'], box['y2']
+            class_name = box.get('class_name', '')
+            confidence = box.get('confidence', 0)
+            
+            # Choose color based on class
+            if class_name == 'face':
+                box_color = COLORS['face_box']
+            elif class_name == 'juice_tube':
+                box_color = COLORS['juice_tube_box']
+            else:
+                box_color = 'white'  # fallback
+            
+            # Draw bounding box rectangle
+            draw.rectangle([x1, y1, x2, y2], outline=box_color, width=3)
+            
+            # Draw class label and confidence
+            label_text = f"{class_name} {confidence:.3f}"
+            draw.text((x1, y1 - 15), label_text, fill=box_color)
+        
+        # Draw keypoints
+        keypoints = pose.get('keypoints', [])
+        for keypoint in keypoints:
+            if keypoint.get('confidence', 0) > confidence_threshold:
+                x, y = keypoint['x'], keypoint['y']
+                name = keypoint.get('name', '')
+                confidence = keypoint.get('confidence', 0)
+                
+                # Skip keypoints at (0,0) which usually means no detection
+                if x == 0 and y == 0:
+                    continue
+                
+                # Choose color based on keypoint name
+                point_color = COLORS.get(name, 'white')
+                
+                # Draw keypoint as a circle
+                radius = 4
+                draw.ellipse([x-radius, y-radius, x+radius, y+radius], 
+                           fill=point_color, outline='black', width=1)
+                
+                # Draw keypoint label
+                label_text = f"{name} {confidence:.3f}"
+                draw.text((x + 5, y - 15), label_text, fill=point_color)
+    
+    return annotated_image
+
 def process_single_image(conn, model, server_id, mode='inference'):
     """
     Process a single image according to the specified mode.
@@ -197,9 +282,18 @@ def process_single_image(conn, model, server_id, mode='inference'):
             output_filename = os.path.join(output_dir, f"image_{server_id}.png")
             
         elif mode == 'plot-stored':
-            # TODO: Retrieve stored labels from database and plot them
-            print("Plot-stored mode not yet implemented")
-            return False
+            # Retrieve stored labels from database and plot them
+            print("Plotting stored labels from database...")
+            
+            stored_labels = record.get('infer_label')
+            if not stored_labels:
+                print(f"Record {server_id} has no stored labels (infer_label is null).", file=sys.stderr)
+                return False
+            
+            # Draw the labels on the image
+            final_image = draw_stored_labels(pil_image, stored_labels, confidence_threshold=0.5)
+            
+            output_filename = os.path.join(output_dir, f"plot_{server_id}.png")
             
         else:
             print(f"Unknown mode: {mode}", file=sys.stderr)
