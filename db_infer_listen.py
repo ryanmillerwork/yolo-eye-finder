@@ -81,6 +81,12 @@ def process_inference_results(conn, batch_ids, batch_results, model_obj):
         model_obj: The loaded YOLO model object.
     """
     model_name = os.path.basename(MODEL_PATH)
+    
+    # Define class-specific keypoint names
+    keypoint_names = {
+        0: ["left_pupil", "right_pupil", "nose_bridge"],  # face class
+        1: ["spout_top", "spout_bottom"]                  # juice_tube class
+    }
 
     for i, result in enumerate(batch_results):
         server_id = batch_ids[i]
@@ -89,7 +95,9 @@ def process_inference_results(conn, batch_ids, batch_results, model_obj):
         # Check for both keypoints AND boxes to ensure we have a full detection
         if result.keypoints is not None and result.boxes is not None and result.boxes.data.numel() > 0:
             num_poses = result.keypoints.shape[0]
-            all_poses_data = []
+            
+            # Group poses by class and keep only the most confident one for each class
+            best_poses_by_class = {}
             highest_avg_confidence = 0.0
 
             for pose_idx in range(num_poses):
@@ -99,13 +107,16 @@ def process_inference_results(conn, batch_ids, batch_results, model_obj):
                 box_conf = box_data.conf[0].item()
                 box_class_id = int(box_data.cls[0].item())
                 
+                # Skip if we already have a more confident detection for this class
+                if box_class_id in best_poses_by_class and best_poses_by_class[box_class_id]['box_confidence'] >= box_conf:
+                    continue
+                
                 box_info = {
                     "x1": round(box_coords[0], 2),
                     "y1": round(box_coords[1], 2),
                     "x2": round(box_coords[2], 2),
                     "y2": round(box_coords[3], 2),
                     "confidence": round(box_conf, 4),
-                    "class_id": box_class_id,
                     "class_name": model_obj.names.get(box_class_id, 'unknown')
                 }
 
@@ -113,14 +124,21 @@ def process_inference_results(conn, batch_ids, batch_results, model_obj):
                 keypoints_xy = result.keypoints.xy[pose_idx]
                 keypoints_conf = result.keypoints.conf[pose_idx] if result.keypoints.conf is not None else [0] * len(keypoints_xy)
                 
+                # Get the correct keypoint names for this class
+                class_keypoint_names = keypoint_names.get(box_class_id, [])
+                expected_keypoints = len(class_keypoint_names)
+                
                 keypoints_list = []
                 confidences = []
                 for kp_idx, (x, y) in enumerate(keypoints_xy):
+                    # Skip keypoints beyond what this class should have
+                    if kp_idx >= expected_keypoints:
+                        continue
+                        
                     conf = keypoints_conf[kp_idx].item()
                     confidences.append(conf)
                     keypoint_data = {
-                        'kp_index': kp_idx,
-                        'name': model_obj.names.get(kp_idx, 'unknown'),
+                        'name': class_keypoint_names[kp_idx],
                         'x': round(x.item(), 2),
                         'y': round(y.item(), 2),
                         'confidence': round(conf, 4)
@@ -131,13 +149,18 @@ def process_inference_results(conn, batch_ids, batch_results, model_obj):
                 if avg_confidence > highest_avg_confidence:
                     highest_avg_confidence = avg_confidence
 
-                all_poses_data.append({
-                    "pose_index": pose_idx,
-                    "avg_confidence": round(avg_confidence, 4),
-                    "box": box_info,
-                    "keypoints": keypoints_list
-                })
+                # Store this as the best pose for this class
+                best_poses_by_class[box_class_id] = {
+                    'box_confidence': box_conf,
+                    'pose_data': {
+                        "box": box_info,
+                        "keypoints": keypoints_list
+                    }
+                }
 
+            # Extract only the pose data from the best poses
+            all_poses_data = [pose_info['pose_data'] for pose_info in best_poses_by_class.values()]
+            
             infer_label_json = json.dumps({"poses": all_poses_data}, indent=2)
             final_confidence = highest_avg_confidence
             

@@ -54,7 +54,7 @@ This creates a virtual environment named `venv_yolo_pg` in your project director
 ### 6. Activate the Virtual Environment
 Before installing dependencies or running your script, activate the virtual environment:
 ```bash
-source yolo_pg/bin/activate
+source ~/envs/yolo_pg/bin/activate
 ```
 Your shell prompt should change to indicate that the virtual environment is active (e.g., `(venv_yolo_pg) user@host:...$`).
 
