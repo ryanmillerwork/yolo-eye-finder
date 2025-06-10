@@ -6,7 +6,7 @@ from psycopg2.extras import DictCursor
 from dotenv import load_dotenv
 import io
 import json
-from PIL import Image, ImageDraw
+from PIL import Image, ImageDraw, ImageFont
 import numpy as np # For robust image rotation
 from ultralytics import YOLO
 import cv2  # OpenCV is used for color conversion
@@ -142,6 +142,16 @@ def draw_stored_labels(image, labels_json, confidence_threshold=0.5):
     """
     print("--- Inside draw_stored_labels ---")
     
+    # --- FONT LOADING ---
+    try:
+        # Using a smaller font size
+        font = ImageFont.truetype("DejaVuSans.ttf", size=7)
+        text_y_offset = 9
+    except IOError:
+        print("Default font not found, using PIL's default. Text will not be resized.")
+        font = ImageFont.load_default()
+        text_y_offset = 15
+    
     labels_data = None
     if isinstance(labels_json, str):
         print(f"  labels_json is a string. Type: {type(labels_json)}")
@@ -188,12 +198,12 @@ def draw_stored_labels(image, labels_json, confidence_threshold=0.5):
             else:
                 box_color = 'white'  # fallback
             
-            # Draw bounding box rectangle
-            draw.rectangle([x1, y1, x2, y2], outline=box_color, width=3)
+            # Draw bounding box rectangle with thinner lines
+            draw.rectangle([x1, y1, x2, y2], outline=box_color, width=1)
             
             # Draw class label and confidence
             label_text = f"{class_name} {box_confidence:.3f}"
-            draw.text((x1, y1 - 15), label_text, fill=box_color)
+            draw.text((x1, y1 - text_y_offset), label_text, fill=box_color, font=font)
             items_drawn += 1
             print(f"    -> DRAWN Box: {class_name} at [{x1},{y1},{x2},{y2}]")
         
@@ -215,14 +225,14 @@ def draw_stored_labels(image, labels_json, confidence_threshold=0.5):
                 # Choose color based on keypoint name
                 point_color = COLORS.get(name, 'white')
                 
-                # Draw keypoint as a circle
-                radius = 4
+                # Draw keypoint as a smaller circle with no outline
+                radius = 1
                 draw.ellipse([x-radius, y-radius, x+radius, y+radius], 
-                           fill=point_color, outline='black', width=1)
+                           fill=point_color)
                 
                 # Draw keypoint label
                 label_text = f"{name} {kp_confidence:.3f}"
-                draw.text((x + 5, y - 15), label_text, fill=point_color)
+                draw.text((x + 5, y - text_y_offset), label_text, fill=point_color, font=font)
                 items_drawn += 1
                 print(f"      -> DRAWN Keypoint: {name} at ({x}, {y})")
     
