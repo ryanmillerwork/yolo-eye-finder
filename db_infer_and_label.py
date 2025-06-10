@@ -134,16 +134,31 @@ def draw_stored_labels(image, labels_json, confidence_threshold=0.5):
     
     Args:
         image (PIL.Image): The image to draw on
-        labels_json (str): JSON string containing the stored labels
+        labels_json (str or dict): JSON string or pre-parsed dict containing the stored labels
         confidence_threshold (float): Minimum confidence to draw elements
         
     Returns:
         PIL.Image: Image with labels drawn
     """
-    try:
-        labels_data = json.loads(labels_json)
-    except (json.JSONDecodeError, TypeError) as e:
-        print(f"Error parsing labels JSON: {e}")
+    print("--- Inside draw_stored_labels ---")
+    
+    labels_data = None
+    if isinstance(labels_json, str):
+        print(f"  labels_json is a string. Type: {type(labels_json)}")
+        try:
+            labels_data = json.loads(labels_json)
+        except (json.JSONDecodeError, TypeError) as e:
+            print(f"  Error parsing labels JSON string: {e}")
+            return image
+    elif isinstance(labels_json, dict):
+        print(f"  labels_json is already a dict. Type: {type(labels_json)}")
+        labels_data = labels_json
+    else:
+        print(f"  labels_json is of unexpected type: {type(labels_json)}. Content: {labels_json}")
+        return image
+
+    if not labels_data:
+        print("  Could not load labels data.")
         return image
     
     # Create a copy of the image to draw on
@@ -151,14 +166,19 @@ def draw_stored_labels(image, labels_json, confidence_threshold=0.5):
     draw = ImageDraw.Draw(annotated_image)
     
     poses = labels_data.get('poses', [])
+    print(f"  Found {len(poses)} poses in labels.")
     
-    for pose in poses:
+    items_drawn = 0
+
+    for i, pose in enumerate(poses):
+        print(f"\n  Processing Pose #{i+1}")
         # Draw bounding box
         box = pose.get('box', {})
-        if box.get('confidence', 0) > confidence_threshold:
+        box_confidence = box.get('confidence', 0)
+        print(f"    Box confidence: {box_confidence:.4f} (threshold: >{confidence_threshold})")
+        if box_confidence > confidence_threshold:
             x1, y1, x2, y2 = box['x1'], box['y1'], box['x2'], box['y2']
             class_name = box.get('class_name', '')
-            confidence = box.get('confidence', 0)
             
             # Choose color based on class
             if class_name == 'face':
@@ -172,19 +192,24 @@ def draw_stored_labels(image, labels_json, confidence_threshold=0.5):
             draw.rectangle([x1, y1, x2, y2], outline=box_color, width=3)
             
             # Draw class label and confidence
-            label_text = f"{class_name} {confidence:.3f}"
+            label_text = f"{class_name} {box_confidence:.3f}"
             draw.text((x1, y1 - 15), label_text, fill=box_color)
+            items_drawn += 1
+            print(f"    -> DRAWN Box: {class_name} at [{x1},{y1},{x2},{y2}]")
         
         # Draw keypoints
         keypoints = pose.get('keypoints', [])
+        print(f"    Found {len(keypoints)} keypoints.")
         for keypoint in keypoints:
-            if keypoint.get('confidence', 0) > confidence_threshold:
+            kp_confidence = keypoint.get('confidence', 0)
+            name = keypoint.get('name', 'N/A')
+            print(f"      Keypoint '{name}' confidence: {kp_confidence:.4f} (threshold: >{confidence_threshold})")
+            if kp_confidence > confidence_threshold:
                 x, y = keypoint['x'], keypoint['y']
-                name = keypoint.get('name', '')
-                confidence = keypoint.get('confidence', 0)
                 
                 # Skip keypoints at (0,0) which usually means no detection
                 if x == 0 and y == 0:
+                    print("      -> SKIPPED Keypoint: (0,0)")
                     continue
                 
                 # Choose color based on keypoint name
@@ -196,9 +221,13 @@ def draw_stored_labels(image, labels_json, confidence_threshold=0.5):
                            fill=point_color, outline='black', width=1)
                 
                 # Draw keypoint label
-                label_text = f"{name} {confidence:.3f}"
+                label_text = f"{name} {kp_confidence:.3f}"
                 draw.text((x + 5, y - 15), label_text, fill=point_color)
+                items_drawn += 1
+                print(f"      -> DRAWN Keypoint: {name} at ({x}, {y})")
     
+    print(f"\n  Total items drawn: {items_drawn}")
+    print("--- Exiting draw_stored_labels ---")
     return annotated_image
 
 def process_single_image(conn, model, server_id, mode='inference'):
