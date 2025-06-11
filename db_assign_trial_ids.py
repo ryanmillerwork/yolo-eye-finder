@@ -14,38 +14,39 @@ from psycopg2.extras import DictCursor
 from dotenv import load_dotenv
 from datetime import datetime, timedelta
 
-def get_trial_end_time(conn, trial_id):
+def get_trial_info(conn, trial_id):
     """
-    Get the client_time (end time) for a specific trial.
+    Get the client_time (end time) and host for a specific trial.
     
     Args:
         conn: Database connection
         trial_id (int): The server_trial_id to look up
         
     Returns:
-        datetime or None: The client_time of the trial, or None if not found
+        tuple: (client_time, host) or (None, None) if not found
     """
     try:
         with conn.cursor() as cur:
-            query = "SELECT client_time FROM server_trial WHERE server_trial_id = %s"
+            query = "SELECT client_time, host FROM server_trial WHERE server_trial_id = %s"
             cur.execute(query, (trial_id,))
             result = cur.fetchone()
             if result:
-                return result['client_time']
+                return result['client_time'], result['host']
             else:
                 print(f"No trial found with server_trial_id: {trial_id}")
-                return None
+                return None, None
     except (Exception, psycopg2.Error) as error:
         print(f"Error fetching trial {trial_id}: {error}")
-        return None
+        return None, None
 
-def get_candidate_inferences(conn, trial_end_time):
+def get_candidate_inferences(conn, trial_end_time, host):
     """
-    Get server_inference records that might belong to the trial based on timing window.
+    Get server_inference records that might belong to the trial based on timing window and host.
     
     Args:
         conn: Database connection
         trial_end_time (datetime): The end time of the trial
+        host (str): The host that ran the trial
         
     Returns:
         list: List of candidate inference records
@@ -59,13 +60,13 @@ def get_candidate_inferences(conn, trial_end_time):
             query = """
             SELECT server_infer_id, client_time, trial_time 
             FROM server_inference 
-            WHERE client_time > %s AND client_time < %s
+            WHERE client_time > %s AND client_time < %s AND host = %s
             ORDER BY client_time
             """
-            cur.execute(query, (start_time, end_time))
+            cur.execute(query, (start_time, end_time, host))
             results = cur.fetchall()
             
-            print(f"Found {len(results)} candidate inference records in time window")
+            print(f"Found {len(results)} candidate inference records in time window for host '{host}'")
             print(f"Time window: {start_time} to {end_time}")
             
             return results
@@ -193,15 +194,16 @@ def process_trial(conn, trial_id, dry_run=False):
     """
     print(f"\n--- Processing Trial {trial_id} ---")
     
-    # Step 1: Get trial end time
-    trial_end_time = get_trial_end_time(conn, trial_id)
-    if not trial_end_time:
+    # Step 1: Get trial end time and host
+    trial_end_time, host = get_trial_info(conn, trial_id)
+    if not trial_end_time or not host:
         return False
     
     print(f"Trial end time: {trial_end_time}")
+    print(f"Trial host: {host}")
     
-    # Step 2: Get candidate inference records
-    candidate_records = get_candidate_inferences(conn, trial_end_time)
+    # Step 2: Get candidate inference records (filtered by host and time window)
+    candidate_records = get_candidate_inferences(conn, trial_end_time, host)
     if not candidate_records:
         print("No candidate records found")
         return False

@@ -107,10 +107,10 @@ def get_inference_by_id(conn, server_id: int):
         return None
 
 def get_inferences_by_trial_id(conn, trial_id: int):
-    """Retrieves all records from the database for a given trial ID, ordered by server_infer_id."""
+    """Retrieves all records from the database for a given trial ID, ordered by client_time."""
     try:
         with conn.cursor() as cur:
-            query = "SELECT * FROM server_inference WHERE server_trial_id = %s ORDER BY server_infer_id"
+            query = "SELECT * FROM server_inference WHERE server_trial_id = %s ORDER BY client_time"
             cur.execute(query, (trial_id,))
             records = cur.fetchall()
             return records
