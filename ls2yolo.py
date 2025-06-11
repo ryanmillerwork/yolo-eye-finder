@@ -45,17 +45,19 @@ def convert_ls_to_coco(ls_json, xml_path):
         'juice_tube': ['spout_top', 'spout_bottom', 'dummy']
     }
     ann_id = 0
+    skipped_count = 0
+    
     for task in tqdm.tqdm(tasks, desc="LS→COCO"):
         img_id = task['id']
         
         # Check if task has annotations
         if not task.get('annotations') or not task['annotations']:
-            print(f"\nWarning: Task {img_id} has no annotations, skipping...")
+            skipped_count += 1
             continue
             
         res = task['annotations'][0]['result']
         if not res:
-            print(f"\nWarning: Task {img_id} has empty result list, skipping...")
+            skipped_count += 1
             continue
             
         try:
@@ -206,7 +208,13 @@ def main():
     with open(proj / 'coco_keypoints.json', 'w') as f:
         json.dump(coco, f, indent=2)
     convert_coco_to_yolo(coco, imgd, proj)
-    print("✓ Done: coco_keypoints.json and yolo_pose_dataset created in", args.project_dir)
+    total = len(coco['images'])
+    print(f"\nDataset summary:")
+    print(f"  Images included in dataset: {total}")
+    print(f"  Images skipped (no annotations): {skipped_count}")
+    print(f"  Train split: {floor(0.7 * total)} images")
+    print(f"  Val split: {total - floor(0.7 * total)} images")
+    print(f"\n✓ Done: coco_keypoints.json and yolo_pose_dataset created in {args.project_dir}")
 
 
 if __name__ == '__main__':
