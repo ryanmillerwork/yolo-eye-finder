@@ -39,6 +39,39 @@ def get_trial_info(conn, trial_id):
         print(f"Error fetching trial {trial_id}: {error}")
         return None, None
 
+def get_trials_for_date(conn, date_str):
+    """
+    Get all trial IDs for a specific date.
+    
+    Args:
+        conn: Database connection
+        date_str (str): Date in YYYY-MM-DD format
+        
+    Returns:
+        list: List of server_trial_id values for that date
+    """
+    try:
+        with conn.cursor() as cur:
+            query = """
+            SELECT server_trial_id, client_time, host 
+            FROM server_trial 
+            WHERE DATE(client_time) = %s
+            ORDER BY client_time
+            """
+            cur.execute(query, (date_str,))
+            results = cur.fetchall()
+            
+            print(f"Found {len(results)} trials for date {date_str}")
+            if results:
+                print(f"Trial IDs: {[r['server_trial_id'] for r in results]}")
+                hosts = set(r['host'] for r in results)
+                print(f"Hosts involved: {sorted(hosts)}")
+            
+            return [r['server_trial_id'] for r in results]
+    except (Exception, psycopg2.Error) as error:
+        print(f"Error fetching trials for date {date_str}: {error}")
+        return []
+
 def get_candidate_inferences(conn, trial_end_time, host):
     """
     Get server_inference records that might belong to the trial based on timing window and host.
@@ -302,19 +335,30 @@ Examples:
   python db_assign_trial_ids.py 12345                    # Process single trial
   python db_assign_trial_ids.py 12345 12346 12347        # Process multiple trials
   python db_assign_trial_ids.py 12345 --dry-run          # Test without updating database
+  python db_assign_trial_ids.py --date 2025-06-06        # Process all trials for a specific date
+  python db_assign_trial_ids.py --date 2025-06-06 --dry-run  # Test date processing
         """,
         formatter_class=argparse.RawDescriptionHelpFormatter
     )
-    parser.add_argument("trial_ids", nargs='+', type=int,
-                       help="Server trial IDs to process")
+    parser.add_argument("trial_ids", nargs='*', type=int,
+                       help="Server trial IDs to process (not used with --date)")
+    parser.add_argument("--date", type=str,
+                       help="Process all trials for a specific date (YYYY-MM-DD format)")
     parser.add_argument("--dry-run", action='store_true',
                        help="Show what would be updated without actually updating the database")
     args = parser.parse_args()
     
-    trial_ids = args.trial_ids
+    # Validate arguments
+    if args.date and args.trial_ids:
+        print("Error: Cannot specify both --date and trial_ids", file=sys.stderr)
+        return 1
+    
+    if not args.date and not args.trial_ids:
+        print("Error: Must specify either --date or trial_ids", file=sys.stderr)
+        return 1
+    
     dry_run = args.dry_run
     
-    print(f"Processing {len(trial_ids)} trial(s): {trial_ids}")
     if dry_run:
         print("DRY RUN MODE - No database changes will be made")
     
@@ -332,6 +376,17 @@ Examples:
             host="localhost", database="base", user="postgres", password=db_password, cursor_factory=DictCursor
         )
         print("Database connection established.")
+        
+        # Get trial IDs to process
+        if args.date:
+            print(f"Processing all trials for date: {args.date}")
+            trial_ids = get_trials_for_date(conn, args.date)
+            if not trial_ids:
+                print(f"No trials found for date {args.date}")
+                return 0
+        else:
+            trial_ids = args.trial_ids
+            print(f"Processing {len(trial_ids)} specified trial(s): {trial_ids}")
         
         # Process each trial
         successful_count = 0
