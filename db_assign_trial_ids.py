@@ -88,6 +88,26 @@ def find_trial_boundaries(candidate_records, trial_end_time):
     if not candidate_records:
         return None, None
     
+    # DEBUG: Show trial_time progression for all records
+    print(f"\nDEBUG: Trial time progression for all {len(candidate_records)} candidates:")
+    for i, record in enumerate(candidate_records):
+        time_diff = (record['client_time'] - trial_end_time).total_seconds()
+        print(f"  {i:3d}: ID {record['server_infer_id']}, trial_time {record['trial_time']:5d}, "
+              f"time_offset {time_diff:+7.3f}s")
+        if i >= 20 and len(candidate_records) > 40:
+            print(f"  ... (skipping {len(candidate_records) - 40} middle records)")
+            break
+    
+    # Show last 20 if we skipped middle records
+    if len(candidate_records) > 40:
+        for i in range(max(21, len(candidate_records) - 20), len(candidate_records)):
+            record = candidate_records[i]
+            time_diff = (record['client_time'] - trial_end_time).total_seconds()
+            print(f"  {i:3d}: ID {record['server_infer_id']}, trial_time {record['trial_time']:5d}, "
+                  f"time_offset {time_diff:+7.3f}s")
+    
+    print()  # blank line
+    
     # Find the sample point (200ms before trial end)
     sample_time = trial_end_time - timedelta(milliseconds=200)
     
@@ -107,9 +127,15 @@ def find_trial_boundaries(candidate_records, trial_end_time):
     
     # Work backwards to find trial start
     start_index = closest_index
-    for i in range(closest_index - 1, -1, -1):
+    print(f"\nDEBUG: Working backwards from index {closest_index}:")
+    for i in range(closest_index - 1, max(-1, closest_index - 10), -1):
+        if i < 0:
+            break
         current_trial_time = candidate_records[i]['trial_time']
         next_trial_time = candidate_records[i + 1]['trial_time']
+        
+        print(f"  Index {i}: trial_time {current_trial_time} -> {next_trial_time} "
+              f"(diff: {next_trial_time - current_trial_time:+d})")
         
         # If trial_time increases when going backwards, we've hit the previous trial
         if current_trial_time > next_trial_time:
@@ -118,15 +144,35 @@ def find_trial_boundaries(candidate_records, trial_end_time):
             start_index = i + 1
             break
     else:
-        # If we didn't break, use the first record
-        start_index = 0
-        print(f"Used first record as trial start (index 0)")
+        # If we didn't break, check if we should look further back
+        if closest_index >= 10:
+            print(f"  (checking further back...)")
+            for i in range(closest_index - 10, -1, -1):
+                current_trial_time = candidate_records[i]['trial_time']
+                next_trial_time = candidate_records[i + 1]['trial_time']
+                
+                if current_trial_time > next_trial_time:
+                    print(f"Found trial start boundary at index {i+1}")
+                    print(f"  Previous trial_time: {current_trial_time}, Current trial_time: {next_trial_time}")
+                    start_index = i + 1
+                    break
+            else:
+                # If we still didn't break, use the first record
+                start_index = 0
+                print(f"Used first record as trial start (index 0)")
+        else:
+            start_index = 0
+            print(f"Used first record as trial start (index 0)")
     
     # Work forwards to find trial end
     end_index = closest_index
-    for i in range(closest_index + 1, len(candidate_records)):
+    print(f"\nDEBUG: Working forwards from index {closest_index}:")
+    for i in range(closest_index + 1, min(len(candidate_records), closest_index + 10)):
         current_trial_time = candidate_records[i]['trial_time']
         prev_trial_time = candidate_records[i - 1]['trial_time']
+        
+        print(f"  Index {i}: trial_time {prev_trial_time} -> {current_trial_time} "
+              f"(diff: {current_trial_time - prev_trial_time:+d})")
         
         # If trial_time drops significantly when going forwards, we've hit the next trial
         if current_trial_time < prev_trial_time and (prev_trial_time - current_trial_time) > 1000:  # 1 second drop
@@ -135,9 +181,25 @@ def find_trial_boundaries(candidate_records, trial_end_time):
             end_index = i - 1
             break
     else:
-        # If we didn't break, use the last record
-        end_index = len(candidate_records) - 1
-        print(f"Used last record as trial end (index {end_index})")
+        # If we didn't break, check if we should look further forward
+        if len(candidate_records) - closest_index > 10:
+            print(f"  (checking further forward...)")
+            for i in range(closest_index + 10, len(candidate_records)):
+                current_trial_time = candidate_records[i]['trial_time']
+                prev_trial_time = candidate_records[i - 1]['trial_time']
+                
+                if current_trial_time < prev_trial_time and (prev_trial_time - current_trial_time) > 1000:
+                    print(f"Found trial end boundary at index {i-1}")
+                    print(f"  Previous trial_time: {prev_trial_time}, Next trial_time: {current_trial_time}")
+                    end_index = i - 1
+                    break
+            else:
+                # If we still didn't break, use the last record
+                end_index = len(candidate_records) - 1
+                print(f"Used last record as trial end (index {end_index})")
+        else:
+            end_index = len(candidate_records) - 1
+            print(f"Used last record as trial end (index {end_index})")
     
     return start_index, end_index
 
