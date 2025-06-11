@@ -108,8 +108,8 @@ def find_trial_boundaries(candidate_records, trial_end_time):
     
     print()  # blank line
     
-    # Find the sample point (200ms before trial end)
-    sample_time = trial_end_time - timedelta(milliseconds=200)
+    # Find the sample point (500ms before trial end)
+    sample_time = trial_end_time - timedelta(milliseconds=500)
     
     # Find the record closest to the sample time
     closest_index = 0
