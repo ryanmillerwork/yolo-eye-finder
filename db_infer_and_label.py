@@ -9,10 +9,10 @@ import json
 from PIL import Image, ImageDraw, ImageFont
 import numpy as np # For robust image rotation
 from ultralytics import YOLO
-import cv2  # OpenCV is used for color conversion
+import cv2  # OpenCV is used for color conversion and video creation
 
 # --- Configuration ---
-MODEL_PATH = "./models/HB-eyes-400_small.pt"
+MODEL_PATH = "./models/HB-eyes-1000_small.pt"
 CONF_THRESHOLD = 0.1  # Use a low threshold for debugging to see all possible detections
 
 # Output directories for different modes
@@ -20,7 +20,8 @@ BASE_OUTPUT_DIR = "/mnt/qpcs/db/db_infer_and_label"
 OUTPUT_DIRS = {
     'inference': os.path.join(BASE_OUTPUT_DIR, "inference"),
     'save-only': os.path.join(BASE_OUTPUT_DIR, "save-only"),
-    'plot-stored': os.path.join(BASE_OUTPUT_DIR, "plot-stored")
+    'plot-stored': os.path.join(BASE_OUTPUT_DIR, "plot-stored"),
+    'trial-video': os.path.join(BASE_OUTPUT_DIR, "trial-videos")
 }
 
 # Colors for plotting stored labels
@@ -103,6 +104,18 @@ def get_inference_by_id(conn, server_id: int):
             return record
     except (Exception, psycopg2.Error) as error:
         print(f"Error fetching record {server_id}: {error}")
+        return None
+
+def get_inferences_by_trial_id(conn, trial_id: int):
+    """Retrieves all records from the database for a given trial ID, ordered by server_infer_id."""
+    try:
+        with conn.cursor() as cur:
+            query = "SELECT * FROM server_inference WHERE server_trial_id = %s ORDER BY server_infer_id"
+            cur.execute(query, (trial_id,))
+            records = cur.fetchall()
+            return records
+    except (Exception, psycopg2.Error) as error:
+        print(f"Error fetching records for trial {trial_id}: {error}")
         return None
 
 def correct_image_orientation(image):
@@ -240,6 +253,54 @@ def draw_stored_labels(image, labels_json, confidence_threshold=0.5):
     print("--- Exiting draw_stored_labels ---")
     return annotated_image
 
+def create_trial_video(processed_images, output_path, fps=30):
+    """
+    Create a video from a list of processed images.
+    
+    Args:
+        processed_images (list): List of PIL Image objects
+        output_path (str): Path where the video should be saved
+        fps (int): Frames per second for the output video
+        
+    Returns:
+        bool: True if successful, False if failed
+    """
+    if not processed_images:
+        print("No images to create video from")
+        return False
+    
+    try:
+        # Get dimensions from the first image
+        first_image = processed_images[0]
+        width, height = first_image.size
+        
+        # Define the codec and create VideoWriter object
+        fourcc = cv2.VideoWriter_fourcc(*'mp4v')
+        video_writer = cv2.VideoWriter(output_path, fourcc, fps, (width, height))
+        
+        print(f"Creating video with {len(processed_images)} frames at {fps} FPS")
+        print(f"Video dimensions: {width}x{height}")
+        
+        for i, pil_image in enumerate(processed_images):
+            # Convert PIL image to OpenCV format (BGR)
+            rgb_array = np.array(pil_image)
+            bgr_array = cv2.cvtColor(rgb_array, cv2.COLOR_RGB2BGR)
+            
+            # Write the frame
+            video_writer.write(bgr_array)
+            
+            if (i + 1) % 50 == 0:  # Progress update every 50 frames
+                print(f"  Processed {i + 1}/{len(processed_images)} frames")
+        
+        # Release the video writer
+        video_writer.release()
+        print(f"Video successfully saved to: {output_path}")
+        return True
+        
+    except Exception as e:
+        print(f"Error creating video: {e}")
+        return False
+
 def process_single_image(conn, model, server_id, mode='inference'):
     """
     Process a single image according to the specified mode.
@@ -350,6 +411,101 @@ def process_single_image(conn, model, server_id, mode='inference'):
         print(f"Error processing ID {server_id}: {e}", file=sys.stderr)
         return False
 
+def process_trial_video(conn, model, trial_id, fps=30):
+    """
+    Process all images for a trial and create a video with inference results.
+    
+    Args:
+        conn: Database connection
+        model: YOLO model instance
+        trial_id (int): The trial_id to process
+        fps (int): Frames per second for the output video
+        
+    Returns:
+        bool: True if successful, False if failed
+    """
+    try:
+        print(f"\n--- Processing Trial Video: {trial_id} ---")
+        
+        # Get all inference records for this trial
+        records = get_inferences_by_trial_id(conn, trial_id)
+        
+        if not records:
+            print(f"No records found for trial_id: {trial_id}", file=sys.stderr)
+            return False
+        
+        print(f"Found {len(records)} images for trial {trial_id}")
+        
+        # Ensure output directory exists
+        try:
+            output_dir = ensure_output_dir_exists('trial-video')
+        except ValueError as e:
+            print(f"Error: {e}", file=sys.stderr)
+            return False
+        
+        processed_images = []
+        successful_count = 0
+        failed_count = 0
+        
+        for i, record in enumerate(records):
+            server_id = record.get('server_infer_id')
+            print(f"\nProcessing frame {i+1}/{len(records)} (ID: {server_id})")
+            
+            input_data_bytes = record.get('input_data')
+            if not input_data_bytes:
+                print(f"Record {server_id} has no image data (input_data is null).", file=sys.stderr)
+                failed_count += 1
+                continue
+
+            try:
+                # Load and correct image
+                image_stream = io.BytesIO(input_data_bytes)
+                unprocessed_image = Image.open(image_stream).convert("RGB")
+                pil_image = correct_image_orientation(unprocessed_image)
+                
+                # Run YOLO inference
+                results = model(pil_image, conf=CONF_THRESHOLD, verbose=False)
+                
+                if not results:
+                    print(f"Inference failed for ID {server_id}", file=sys.stderr)
+                    failed_count += 1
+                    continue
+                    
+                result = results[0]
+                
+                # Get annotated image
+                annotated_image_bgr = result.plot()
+                annotated_image_rgb = cv2.cvtColor(annotated_image_bgr, cv2.COLOR_BGR2RGB)
+                final_image = Image.fromarray(annotated_image_rgb)
+                
+                processed_images.append(final_image)
+                successful_count += 1
+                
+            except Exception as e:
+                print(f"Failed to process image for ID {server_id}: {e}", file=sys.stderr)
+                failed_count += 1
+                continue
+        
+        if not processed_images:
+            print(f"No images were successfully processed for trial {trial_id}", file=sys.stderr)
+            return False
+        
+        # Create video
+        video_filename = os.path.join(output_dir, f"trial_{trial_id}.mp4")
+        video_success = create_trial_video(processed_images, video_filename, fps)
+        
+        # Summary
+        print(f"\n--- Trial {trial_id} Processing Complete ---")
+        print(f"Successfully processed: {successful_count}")
+        print(f"Failed: {failed_count}")
+        print(f"Total frames in video: {len(processed_images)}")
+        
+        return video_success
+        
+    except Exception as e:
+        print(f"Error processing trial {trial_id}: {e}", file=sys.stderr)
+        return False
+
 def main():
     """Main function to fetch, infer, and save a labeled image."""
     parser = argparse.ArgumentParser(
@@ -359,30 +515,49 @@ ID Specification Examples:
   Manual list:        123 456 789
   Range syntax:       123456:20:134  (start:step:count - start at 123456, every 20th ID, for 134 total)
   Mixed:              123 456 100:5:10
+
+Trial Video Mode:
+  --mode trial-video --trial-id 12345 --fps 30
         """,
         formatter_class=argparse.RawDescriptionHelpFormatter
     )
-    parser.add_argument("id_specs", nargs='+', 
-                       help="Server infer IDs or range specifications. Use 'start:step:count' for ranges (e.g., '123456:20:134')")
-    parser.add_argument("--mode", choices=['inference', 'save-only', 'plot-stored'], default='inference',
-                       help="Processing mode: 'inference' (run YOLO and save labeled image), 'save-only' (just save corrected image), 'plot-stored' (plot stored labels from DB)")
+    parser.add_argument("id_specs", nargs='*', 
+                       help="Server infer IDs or range specifications. Use 'start:step:count' for ranges (e.g., '123456:20:134'). Not used in trial-video mode.")
+    parser.add_argument("--mode", choices=['inference', 'save-only', 'plot-stored', 'trial-video'], default='inference',
+                       help="Processing mode: 'inference' (run YOLO and save labeled image), 'save-only' (just save corrected image), 'plot-stored' (plot stored labels from DB), 'trial-video' (create video from all images in a trial)")
+    parser.add_argument("--trial-id", type=int,
+                       help="Trial ID to process (required for trial-video mode)")
+    parser.add_argument("--fps", type=int, default=30,
+                       help="Frames per second for video output (default: 30)")
     args = parser.parse_args()
-    
-    # Parse the ID specifications
-    try:
-        server_ids_to_process = parse_id_specification(args.id_specs)
-    except (ValueError, TypeError) as e:
-        print(f"Error parsing ID specifications: {e}", file=sys.stderr)
-        return 1
     
     processing_mode = args.mode
     
-    print(f"Total IDs to process: {len(server_ids_to_process)}")
-    if len(server_ids_to_process) > 10:
-        print(f"First 10 IDs: {server_ids_to_process[:10]}")
-        print(f"Last 10 IDs: {server_ids_to_process[-10:]}")
+    # Validate arguments based on mode
+    if processing_mode == 'trial-video':
+        if not args.trial_id:
+            print("Error: --trial-id is required for trial-video mode", file=sys.stderr)
+            return 1
+        trial_id = args.trial_id
+        fps = args.fps
+        print(f"Trial video mode: Processing trial {trial_id} at {fps} FPS")
     else:
-        print(f"IDs: {server_ids_to_process}")
+        if not args.id_specs:
+            print("Error: id_specs are required for non-trial-video modes", file=sys.stderr)
+            return 1
+        # Parse the ID specifications
+        try:
+            server_ids_to_process = parse_id_specification(args.id_specs)
+        except (ValueError, TypeError) as e:
+            print(f"Error parsing ID specifications: {e}", file=sys.stderr)
+            return 1
+        
+        print(f"Total IDs to process: {len(server_ids_to_process)}")
+        if len(server_ids_to_process) > 10:
+            print(f"First 10 IDs: {server_ids_to_process[:10]}")
+            print(f"Last 10 IDs: {server_ids_to_process[-10:]}")
+        else:
+            print(f"IDs: {server_ids_to_process}")
 
     # --- Load Environment and Model ---
     load_dotenv()
@@ -393,7 +568,7 @@ ID Specification Examples:
 
     # Only load model if we need it for inference
     model = None
-    if processing_mode == 'inference':
+    if processing_mode in ['inference', 'trial-video']:
         print(f"Loading YOLO model from: {MODEL_PATH}")
         try:
             model = YOLO(MODEL_PATH)
@@ -410,28 +585,34 @@ ID Specification Examples:
         conn = psycopg2.connect(
             host="localhost", database="base", user="postgres", password=db_password, cursor_factory=DictCursor
         )
-        print(f"Database connection established. Processing {len(server_ids_to_process)} record(s)")
         
-        # Process each ID
-        successful_count = 0
-        failed_count = 0
-        
-        for server_id in server_ids_to_process:
-            success = process_single_image(conn, model, server_id, processing_mode)
-            if success:
-                successful_count += 1
-            else:
-                failed_count += 1
-        
-        # Summary
-        print(f"\n--- Processing Complete ---")
-        print(f"Successfully processed: {successful_count}")
-        print(f"Failed: {failed_count}")
-        print(f"Total: {len(server_ids_to_process)}")
-        
-        # Return non-zero exit code if any failed
-        if failed_count > 0:
-            return 1
+        if processing_mode == 'trial-video':
+            print(f"Database connection established. Processing trial {trial_id}")
+            success = process_trial_video(conn, model, trial_id, fps)
+            return 0 if success else 1
+        else:
+            print(f"Database connection established. Processing {len(server_ids_to_process)} record(s)")
+            
+            # Process each ID
+            successful_count = 0
+            failed_count = 0
+            
+            for server_id in server_ids_to_process:
+                success = process_single_image(conn, model, server_id, processing_mode)
+                if success:
+                    successful_count += 1
+                else:
+                    failed_count += 1
+            
+            # Summary
+            print(f"\n--- Processing Complete ---")
+            print(f"Successfully processed: {successful_count}")
+            print(f"Failed: {failed_count}")
+            print(f"Total: {len(server_ids_to_process)}")
+            
+            # Return non-zero exit code if any failed
+            if failed_count > 0:
+                return 1
 
     except psycopg2.Error as e:
         print(f"Database error: {e}", file=sys.stderr)
