@@ -13,7 +13,7 @@ import cv2  # OpenCV is used for color conversion and video creation
 
 # --- Configuration ---
 MODEL_PATH = "./models/HB-eyes-1000_small.pt"
-CONF_THRESHOLD = 0.1  # Use a low threshold for debugging to see all possible detections
+CONF_THRESHOLD = 0.5  # Confidence threshold for drawing detections
 
 # Output directories for different modes
 BASE_OUTPUT_DIR = "/mnt/qpcs/db/db_infer_and_label"
@@ -141,18 +141,20 @@ def correct_image_orientation(image):
     
     return corrected_image
 
-def draw_stored_labels(image, labels_json, confidence_threshold=0.5):
+def draw_stored_labels(image, labels_json, confidence_threshold=None):
     """
     Draw stored labels (boxes and keypoints) on the image.
     
     Args:
         image (PIL.Image): The image to draw on
         labels_json (str or dict): JSON string or pre-parsed dict containing the stored labels
-        confidence_threshold (float): Minimum confidence to draw elements
+        confidence_threshold (float): Minimum confidence to draw elements (uses CONF_THRESHOLD if None)
         
     Returns:
         PIL.Image: Image with labels drawn
     """
+    if confidence_threshold is None:
+        confidence_threshold = CONF_THRESHOLD
     print("--- Inside draw_stored_labels ---")
     
     # --- FONT LOADING ---
@@ -192,33 +194,41 @@ def draw_stored_labels(image, labels_json, confidence_threshold=0.5):
     print(f"  Found {len(poses)} poses in labels.")
     
     items_drawn = 0
+    
+    # Track drawn elements to ensure only 1 of each type
+    drawn_boxes = set()
+    drawn_keypoints = set()
 
     for i, pose in enumerate(poses):
         print(f"\n  Processing Pose #{i+1}")
         # Draw bounding box
         box = pose.get('box', {})
         box_confidence = box.get('confidence', 0)
+        class_name = box.get('class_name', '')
         print(f"    Box confidence: {box_confidence:.4f} (threshold: >{confidence_threshold})")
-        if box_confidence > confidence_threshold:
-            x1, y1, x2, y2 = box['x1'], box['y1'], box['x2'], box['y2']
-            class_name = box.get('class_name', '')
+        
+        # Skip if below threshold or already drawn this class
+        if box_confidence <= confidence_threshold or class_name in drawn_boxes:
+            if class_name in drawn_boxes:
+                print(f"    -> SKIPPED Box: {class_name} (already drawn)")
+            continue
             
-            # Choose color based on class
-            if class_name == 'face':
-                box_color = COLORS['face_box']
-            elif class_name == 'juice_tube':
-                box_color = COLORS['juice_tube_box']
-            else:
-                box_color = 'white'  # fallback
-            
-            # Draw bounding box rectangle with thinner lines
-            draw.rectangle([x1, y1, x2, y2], outline=box_color, width=1)
-            
-            # Draw class label and confidence
-            label_text = f"{class_name} {box_confidence:.3f}"
-            draw.text((x1, y1 - text_y_offset), label_text, fill=box_color, font=font)
-            items_drawn += 1
-            print(f"    -> DRAWN Box: {class_name} at [{x1},{y1},{x2},{y2}]")
+        x1, y1, x2, y2 = box['x1'], box['y1'], box['x2'], box['y2']
+        
+        # Choose color based on class
+        if class_name == 'face':
+            box_color = COLORS['face_box']
+        elif class_name == 'juice_tube':
+            box_color = COLORS['juice_tube_box']
+        else:
+            box_color = 'white'  # fallback
+        
+        # Draw bounding box rectangle with thinner lines
+        draw.rectangle([x1, y1, x2, y2], outline=box_color, width=1)
+        
+        drawn_boxes.add(class_name)
+        items_drawn += 1
+        print(f"    -> DRAWN Box: {class_name} at [{x1},{y1},{x2},{y2}]")
         
         # Draw keypoints
         keypoints = pose.get('keypoints', [])
@@ -227,27 +237,34 @@ def draw_stored_labels(image, labels_json, confidence_threshold=0.5):
             kp_confidence = keypoint.get('confidence', 0)
             name = keypoint.get('name', 'N/A')
             print(f"      Keypoint '{name}' confidence: {kp_confidence:.4f} (threshold: >{confidence_threshold})")
-            if kp_confidence > confidence_threshold:
-                x, y = keypoint['x'], keypoint['y']
-                
-                # Skip keypoints at (0,0) which usually means no detection
-                if x == 0 and y == 0:
+            
+            # Skip if below threshold, already drawn, or at (0,0)
+            if (kp_confidence <= confidence_threshold or 
+                name in drawn_keypoints or
+                (keypoint['x'] == 0 and keypoint['y'] == 0)):
+                if name in drawn_keypoints:
+                    print(f"      -> SKIPPED Keypoint: {name} (already drawn)")
+                elif keypoint['x'] == 0 and keypoint['y'] == 0:
                     print("      -> SKIPPED Keypoint: (0,0)")
-                    continue
-                
-                # Choose color based on keypoint name
-                point_color = COLORS.get(name, 'white')
-                
-                # Draw keypoint as a smaller circle with no outline
-                radius = 1
-                draw.ellipse([x-radius, y-radius, x+radius, y+radius], 
-                           fill=point_color)
-                
-                # Draw keypoint label
-                label_text = f"{name} {kp_confidence:.3f}"
-                draw.text((x + 5, y - text_y_offset), label_text, fill=point_color, font=font)
-                items_drawn += 1
-                print(f"      -> DRAWN Keypoint: {name} at ({x}, {y})")
+                continue
+            
+            x, y = keypoint['x'], keypoint['y']
+            
+            # Choose color based on keypoint name
+            point_color = COLORS.get(name, 'white')
+            
+            # Draw keypoint as a smaller circle with no outline
+            radius = 1
+            draw.ellipse([x-radius, y-radius, x+radius, y+radius], 
+                       fill=point_color)
+            
+            # Draw keypoint label
+            label_text = f"{name} {kp_confidence:.3f}"
+            draw.text((x + 5, y - text_y_offset), label_text, fill=point_color, font=font)
+            
+            drawn_keypoints.add(name)
+            items_drawn += 1
+            print(f"      -> DRAWN Keypoint: {name} at ({x}, {y})")
     
     print(f"\n  Total items drawn: {items_drawn}")
     print("--- Exiting draw_stored_labels ---")
@@ -364,14 +381,8 @@ def process_single_image(conn, model, server_id, mode='inference'):
             result = results[0] # Get the result for the first (and only) image
             print(f"Inference complete. Detected {len(result.keypoints) if result.keypoints else 0} poses.")
             
-            # The plot() method returns a NumPy array (BGR format) with detections drawn on it
-            annotated_image_bgr = result.plot() 
-            
-            # Convert from BGR (OpenCV's default) to RGB (Pillow's default)
-            annotated_image_rgb = cv2.cvtColor(annotated_image_bgr, cv2.COLOR_BGR2RGB)
-            
-            # Create a Pillow Image from the annotated NumPy array
-            final_image = Image.fromarray(annotated_image_rgb)
+            # Use custom drawing function with consistent styling
+            final_image = draw_yolo_results(pil_image, result)
             
             output_filename = os.path.join(output_dir, f"infer_{server_id}.png")
             
@@ -391,7 +402,7 @@ def process_single_image(conn, model, server_id, mode='inference'):
                 return False
             
             # Draw the labels on the image
-            final_image = draw_stored_labels(pil_image, stored_labels, confidence_threshold=0.5)
+            final_image = draw_stored_labels(pil_image, stored_labels)
             
             output_filename = os.path.join(output_dir, f"plot_{server_id}.png")
             
@@ -473,10 +484,8 @@ def process_trial_video(conn, model, trial_id, fps=30):
                     
                 result = results[0]
                 
-                # Get annotated image
-                annotated_image_bgr = result.plot()
-                annotated_image_rgb = cv2.cvtColor(annotated_image_bgr, cv2.COLOR_BGR2RGB)
-                final_image = Image.fromarray(annotated_image_rgb)
+                # Use custom drawing function with consistent styling
+                final_image = draw_yolo_results(pil_image, result)
                 
                 processed_images.append(final_image)
                 successful_count += 1
@@ -505,6 +514,127 @@ def process_trial_video(conn, model, trial_id, fps=30):
     except Exception as e:
         print(f"Error processing trial {trial_id}: {e}", file=sys.stderr)
         return False
+
+def draw_yolo_results(image, results, confidence_threshold=None):
+    """
+    Draw YOLO inference results on the image using custom styling.
+    
+    Args:
+        image (PIL.Image): The image to draw on
+        results: YOLO results object
+        confidence_threshold (float): Minimum confidence to draw elements (uses CONF_THRESHOLD if None)
+        
+    Returns:
+        PIL.Image: Image with results drawn
+    """
+    if confidence_threshold is None:
+        confidence_threshold = CONF_THRESHOLD
+        
+    print("--- Inside draw_yolo_results ---")
+    
+    # --- FONT LOADING ---
+    try:
+        # Using a smaller font size
+        font = ImageFont.truetype("DejaVuSans.ttf", size=7)
+        text_y_offset = 9
+    except IOError:
+        print("Default font not found, using PIL's default. Text will not be resized.")
+        font = ImageFont.load_default()
+        text_y_offset = 15
+    
+    # Create a copy of the image to draw on
+    annotated_image = image.copy()
+    draw = ImageDraw.Draw(annotated_image)
+    
+    items_drawn = 0
+    
+    # Track drawn elements to ensure only 1 of each type
+    drawn_boxes = set()
+    drawn_keypoints = set()
+    
+    # Process bounding boxes
+    if results.boxes is not None:
+        boxes = results.boxes
+        for i, box in enumerate(boxes):
+            confidence = float(box.conf[0])
+            class_id = int(box.cls[0])
+            class_name = results.names[class_id] if results.names else f"class_{class_id}"
+            
+            print(f"  Box {i}: {class_name} confidence: {confidence:.4f} (threshold: >{confidence_threshold})")
+            
+            # Skip if below threshold or already drawn this class
+            if confidence <= confidence_threshold or class_name in drawn_boxes:
+                if class_name in drawn_boxes:
+                    print(f"    -> SKIPPED Box: {class_name} (already drawn)")
+                continue
+                
+            # Get box coordinates
+            x1, y1, x2, y2 = box.xyxy[0].tolist()
+            
+            # Choose color based on class
+            if class_name == 'face':
+                box_color = COLORS['face_box']
+            elif class_name == 'juice_tube':
+                box_color = COLORS['juice_tube_box']
+            else:
+                box_color = 'white'  # fallback
+            
+            # Draw bounding box rectangle with thin lines
+            draw.rectangle([x1, y1, x2, y2], outline=box_color, width=1)
+            
+            drawn_boxes.add(class_name)
+            items_drawn += 1
+            print(f"    -> DRAWN Box: {class_name} at [{x1:.1f},{y1:.1f},{x2:.1f},{y2:.1f}]")
+    
+    # Process keypoints
+    if results.keypoints is not None:
+        keypoints = results.keypoints
+        
+        # Define keypoint names (adjust based on your model)
+        keypoint_names = ['left_pupil', 'right_pupil', 'nose_bridge', 'spout_top', 'spout_bottom']
+        
+        for pose_idx, pose_keypoints in enumerate(keypoints):
+            print(f"\n  Processing Pose #{pose_idx+1} keypoints")
+            xy = pose_keypoints.xy[0]  # Get x,y coordinates
+            conf = pose_keypoints.conf[0] if pose_keypoints.conf is not None else None
+            
+            for kp_idx, (x, y) in enumerate(xy):
+                # Get keypoint name and confidence
+                kp_name = keypoint_names[kp_idx] if kp_idx < len(keypoint_names) else f"keypoint_{kp_idx}"
+                kp_confidence = float(conf[kp_idx]) if conf is not None else 1.0
+                
+                print(f"    Keypoint '{kp_name}' confidence: {kp_confidence:.4f} (threshold: >{confidence_threshold})")
+                
+                # Skip if below threshold, already drawn, or at (0,0)
+                if (kp_confidence <= confidence_threshold or 
+                    kp_name in drawn_keypoints or
+                    (float(x) == 0 and float(y) == 0)):
+                    if kp_name in drawn_keypoints:
+                        print(f"      -> SKIPPED Keypoint: {kp_name} (already drawn)")
+                    elif float(x) == 0 and float(y) == 0:
+                        print(f"      -> SKIPPED Keypoint: {kp_name} (at origin)")
+                    continue
+                
+                # Choose color based on keypoint name
+                point_color = COLORS.get(kp_name, 'white')
+                
+                # Draw keypoint as a small circle
+                radius = 1
+                x_coord, y_coord = float(x), float(y)
+                draw.ellipse([x_coord-radius, y_coord-radius, x_coord+radius, y_coord+radius], 
+                           fill=point_color)
+                
+                # Draw keypoint label
+                label_text = f"{kp_name} {kp_confidence:.3f}"
+                draw.text((x_coord + 5, y_coord - text_y_offset), label_text, fill=point_color, font=font)
+                
+                drawn_keypoints.add(kp_name)
+                items_drawn += 1
+                print(f"      -> DRAWN Keypoint: {kp_name} at ({x_coord:.1f}, {y_coord:.1f})")
+    
+    print(f"\n  Total items drawn: {items_drawn}")
+    print("--- Exiting draw_yolo_results ---")
+    return annotated_image
 
 def main():
     """Main function to fetch, infer, and save a labeled image."""
