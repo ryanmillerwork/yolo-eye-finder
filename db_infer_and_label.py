@@ -254,7 +254,7 @@ def draw_stored_labels(image, labels_json, confidence_threshold=None):
             point_color = COLORS.get(name, 'white')
             
             # Draw keypoint as a smaller circle with no outline
-            radius = 1
+            radius = 2
             draw.ellipse([x-radius, y-radius, x+radius, y+radius], 
                        fill=point_color)
             
@@ -615,7 +615,7 @@ def draw_yolo_results(image, results, confidence_threshold=None):
                 point_color = COLORS.get(kp_name, 'white')
                 
                 # Draw keypoint as a small circle
-                radius = 1
+                radius = 2
                 x_coord, y_coord = float(x), float(y)
                 draw.ellipse([x_coord-radius, y_coord-radius, x_coord+radius, y_coord+radius], 
                            fill=point_color)
