@@ -258,10 +258,6 @@ def draw_stored_labels(image, labels_json, confidence_threshold=None):
             draw.ellipse([x-radius, y-radius, x+radius, y+radius], 
                        fill=point_color)
             
-            # Draw keypoint label
-            label_text = f"{name} {kp_confidence:.3f}"
-            draw.text((x + 5, y - text_y_offset), label_text, fill=point_color, font=font)
-            
             drawn_keypoints.add(name)
             items_drawn += 1
             print(f"      -> DRAWN Keypoint: {name} at ({x}, {y})")
@@ -623,10 +619,6 @@ def draw_yolo_results(image, results, confidence_threshold=None):
                 x_coord, y_coord = float(x), float(y)
                 draw.ellipse([x_coord-radius, y_coord-radius, x_coord+radius, y_coord+radius], 
                            fill=point_color)
-                
-                # Draw keypoint label
-                label_text = f"{kp_name} {kp_confidence:.3f}"
-                draw.text((x_coord + 5, y_coord - text_y_offset), label_text, fill=point_color, font=font)
                 
                 drawn_keypoints.add(kp_name)
                 items_drawn += 1
