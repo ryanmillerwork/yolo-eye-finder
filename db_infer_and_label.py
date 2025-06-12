@@ -420,11 +420,11 @@ def process_single_image(conn, model, server_id, mode='inference'):
 
 def process_trial_video(conn, model, trial_id, fps=30):
     """
-    Process all images for a trial and create a video with inference results.
+    Process all images for a trial and create a video using stored inference results.
     
     Args:
         conn: Database connection
-        model: YOLO model instance
+        model: YOLO model instance (not used - kept for compatibility)
         trial_id (int): The trial_id to process
         fps (int): Frames per second for the output video
         
@@ -470,18 +470,15 @@ def process_trial_video(conn, model, trial_id, fps=30):
                 unprocessed_image = Image.open(image_stream).convert("RGB")
                 pil_image = correct_image_orientation(unprocessed_image)
                 
-                # Run YOLO inference
-                results = model(pil_image, conf=CONF_THRESHOLD, verbose=False)
-                
-                if not results:
-                    print(f"Inference failed for ID {server_id}", file=sys.stderr)
+                # Get stored inference results
+                stored_labels = record.get('infer_label')
+                if not stored_labels:
+                    print(f"Record {server_id} has no stored labels (infer_label is null).", file=sys.stderr)
                     failed_count += 1
                     continue
-                    
-                result = results[0]
                 
-                # Use custom drawing function with consistent styling
-                final_image = draw_yolo_results(pil_image, result)
+                # Use stored labels with custom drawing function
+                final_image = draw_stored_labels(pil_image, stored_labels)
                 
                 processed_images.append(final_image)
                 successful_count += 1
@@ -690,7 +687,7 @@ Trial Video Mode:
 
     # Only load model if we need it for inference
     model = None
-    if processing_mode in ['inference', 'trial-video']:
+    if processing_mode == 'inference':
         print(f"Loading YOLO model from: {MODEL_PATH}")
         try:
             model = YOLO(MODEL_PATH)
