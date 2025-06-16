@@ -12,7 +12,7 @@ from ultralytics import YOLO
 import cv2  # OpenCV is used for color conversion and video creation
 
 # --- Configuration ---
-MODEL_PATH = "./models/HB-eyes-1000_small.pt"
+MODEL_PATH = "./models/HB-eyes-1500_small.pt"
 CONF_THRESHOLD = 0.5  # Confidence threshold for drawing detections
 
 # Output directories for different modes
