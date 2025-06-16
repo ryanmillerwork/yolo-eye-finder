@@ -648,6 +648,40 @@ Trial Video Mode:
                        help="Trial ID to process (required for trial-video mode)")
     parser.add_argument("--fps", type=int, default=30,
                        help="Frames per second for video output (default: 30)")
+    
+    # Check if no arguments were provided
+    if len(sys.argv) == 1:
+        print("\n=== Database Image Processing Tool ===")
+        print("\nThis tool can process images from the database in several ways:")
+        print("\n1. Inference Mode (default):")
+        print("   python db_infer_and_label.py 123 456 789")
+        print("   - Runs YOLO model on specified images")
+        print("   - Saves labeled images with detections")
+        print("   - Optional: --mode inference")
+        
+        print("\n2. Save-Only Mode:")
+        print("   python db_infer_and_label.py 123 456 789 --mode save-only")
+        print("   - Just saves corrected images without inference")
+        
+        print("\n3. Plot-Stored Mode:")
+        print("   python db_infer_and_label.py 123 456 789 --mode plot-stored")
+        print("   - Plots existing labels from database")
+        
+        print("\n4. Trial Video Mode:")
+        print("   python db_infer_and_label.py --mode trial-video --trial-id 12345 --fps 30")
+        print("   - Creates video from all images in a trial")
+        print("   - Uses stored labels from database")
+        
+        print("\nID Specification Examples:")
+        print("  - Single IDs: 123 456 789")
+        print("  - Range syntax: 123456:20:134")
+        print("    (start at 123456, every 20th ID, for 134 total)")
+        print("  - Mixed: 123 456 100:5:10")
+        
+        print("\nFor more detailed help:")
+        print("  python db_infer_and_label.py --help")
+        return 0
+        
     args = parser.parse_args()
     
     processing_mode = args.mode
