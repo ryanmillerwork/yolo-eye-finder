@@ -343,7 +343,7 @@ Examples:
     parser.add_argument("trial_ids", nargs='*', type=int,
                        help="Server trial IDs to process (not used with --date)")
     parser.add_argument("--date", type=str,
-                       help="Process all trials for a specific date (YYYY-MM-DD format)")
+                       help="Process all trials for a specific date (format: YYYY-MM-DD)")
     parser.add_argument("--dry-run", action='store_true',
                        help="Show what would be updated without actually updating the database")
     args = parser.parse_args()

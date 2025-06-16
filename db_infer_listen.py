@@ -9,6 +9,32 @@ from PIL import Image # For handling image data; pip install Pillow
 from ultralytics import YOLO # For YOLO model inference; pip install ultralytics
 import torch # To check for CUDA availability
 import time # For benchmarking
+import argparse # For command line argument parsing
+
+def parse_args():
+    """Parse command line arguments."""
+    parser = argparse.ArgumentParser(
+        description="Database-driven YOLO inference service for processing images.",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+Examples:
+  # Run with default settings
+  python db_infer_listen.py
+
+  # Run with custom batch size
+  python db_infer_listen.py --batch-size 128
+
+  # Run with custom model path
+  python db_infer_listen.py --model-path ./models/custom_model.pt
+        """
+    )
+    parser.add_argument('--batch-size', type=int, default=BATCH_SIZE,
+                      help=f'Number of records to process in each batch (default: {BATCH_SIZE})')
+    parser.add_argument('--model-path', type=str, default=MODEL_PATH,
+                      help=f'Path to the YOLO model file (default: {MODEL_PATH})')
+    parser.add_argument('--conf-threshold', type=float, default=CONF_THRESHOLD,
+                      help=f'Confidence threshold for detections (default: {CONF_THRESHOLD})')
+    return parser.parse_args()
 
 def get_unprocessed_inferences(conn, limit: int) -> List[Any]:
     """
@@ -176,6 +202,8 @@ def process_inference_results(conn, batch_ids, batch_results, model_obj):
 
 def main():
     """Main function to run the inference loop."""
+    args = parse_args()
+    
     load_dotenv()
     db_password = os.getenv("PG_PASS")
     if not db_password:
@@ -191,9 +219,9 @@ def main():
         print("  WARNING: CUDA-enabled GPU not found. Falling back to CPU. Inference will be significantly slower.")
         print("  (To enable GPU, ensure NVIDIA drivers and CUDA are installed and that your PyTorch version supports CUDA.)")
 
-    print(f"\nLoading YOLO model from: {MODEL_PATH}")
+    print(f"\nLoading YOLO model from: {args.model_path}")
     try:
-        model = YOLO(MODEL_PATH)
+        model = YOLO(args.model_path)
         # The model will automatically move to the detected device (GPU or CPU)
         print("YOLO model loaded successfully.")
     except Exception as e:
@@ -213,8 +241,8 @@ def main():
         print("Database connection established.")
 
         while True:
-            print(f"\nFetching new batch of up to {BATCH_SIZE} unprocessed records...")
-            batch_data = get_unprocessed_inferences(conn, BATCH_SIZE)
+            print(f"\nFetching new batch of up to {args.batch_size} unprocessed records...")
+            batch_data = get_unprocessed_inferences(conn, args.batch_size)
 
             if not batch_data:
                 print("No more unprocessed records found. All work is done.")
@@ -257,7 +285,7 @@ def main():
             print(f"Performing inference on batch of {len(current_batch_pil_images)} images...")
             try:
                 start_time = time.perf_counter()
-                batch_results = model(current_batch_pil_images, imgsz=IMAGE_SIZE, conf=CONF_THRESHOLD, verbose=False)
+                batch_results = model(current_batch_pil_images, imgsz=IMAGE_SIZE, conf=args.conf_threshold, verbose=False)
                 end_time = time.perf_counter()
                 
                 total_time = end_time - start_time
