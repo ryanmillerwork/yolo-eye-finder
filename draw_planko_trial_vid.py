@@ -89,7 +89,7 @@ def get_trial_info(conn, trial_id: int):
     """Retrieves the trialinfo for a given trial_id."""
     try:
         with conn.cursor() as cur:
-            query = "SELECT trialinfo FROM server_trial WHERE trial_id = %s"
+            query = "SELECT trialinfo FROM server_trial WHERE server_trial_id = %s"
             cur.execute(query, (trial_id,))
             record = cur.fetchone()
             if record:
