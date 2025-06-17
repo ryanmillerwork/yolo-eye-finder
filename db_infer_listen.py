@@ -91,7 +91,7 @@ def update_inference_record(conn, server_id: int, model_name: str, infer_label: 
         print(f"Error while updating record {server_id}: {error}")
 
 BATCH_SIZE = 256 # Optimal batch size determined from benchmarking
-MODEL_PATH = "./models/HB-eyes-1000_small.pt"
+MODEL_PATH = "./models/HB-eyes-1500_small.pt"
 IMAGE_SIZE = (192, 128) # imgsz used during training (width, height)
 CONF_THRESHOLD = 0.1 # Lowered confidence threshold for detection. Default is 0.25
 
