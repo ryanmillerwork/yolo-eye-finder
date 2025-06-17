@@ -12,7 +12,7 @@ from ultralytics import YOLO
 import cv2  # OpenCV is used for color conversion and video creation
 
 
-# python db_infer_and_label.py --mode trial-video --trial-id 431370 --fps 10
+# python db_infer_and_label.py --mode trial-video --trial-id 431370 --model-path ./models/HB-eyes-1500_small.pt
 
 # --- Configuration ---
 MODEL_PATH = "./models/HB-eyes-1500_small.pt"
@@ -555,7 +555,8 @@ def process_trial_video(conn, model, trial_id, fps=None):
 
 def draw_yolo_results(image, results, confidence_threshold=None):
     """
-    Draw YOLO inference results on the image using custom styling.
+    Draw YOLO inference results on the image using custom styling, correctly
+    handling keypoints for different object classes.
     
     Args:
         image (PIL.Image): The image to draw on
@@ -574,89 +575,94 @@ def draw_yolo_results(image, results, confidence_threshold=None):
     try:
         # Using a smaller font size
         font = ImageFont.truetype("DejaVuSans.ttf", size=7)
-        text_y_offset = 9
     except IOError:
         print("Default font not found, using PIL's default. Text will not be resized.")
         font = ImageFont.load_default()
-        text_y_offset = 15
     
-    # Create a copy of the image to draw on
     annotated_image = image.copy()
     draw = ImageDraw.Draw(annotated_image)
     
     items_drawn = 0
-    
-    # Track drawn elements to ensure only 1 of each type
     drawn_boxes = set()
     drawn_keypoints = set()
+
+    # Define class-specific keypoint names, mapping CLASS ID to names.
+    # This must match the model's training configuration.
+    # For 'HB-eyes-1500_small.pt': 0 is 'face', 1 is 'juice_tube'
+    keypoint_names_by_class = {
+        0: ["left_pupil", "right_pupil", "nose_bridge"],  # face
+        1: ["spout_top", "spout_bottom"]                  # juice_tube
+    }
     
-    # Process bounding boxes
-    if results.boxes is not None:
-        boxes = results.boxes
-        for i, box in enumerate(boxes):
-            confidence = float(box.conf[0])
-            class_id = int(box.cls[0])
-            class_name = results.names[class_id] if results.names else f"class_{class_id}"
-            
-            print(f"  Box {i}: {class_name} confidence: {confidence:.4f} (threshold: >{confidence_threshold})")
-            
-            # Skip if below threshold or already drawn this class
-            if confidence <= confidence_threshold or class_name in drawn_boxes:
-                if class_name in drawn_boxes:
-                    print(f"    -> SKIPPED Box: {class_name} (already drawn)")
-                continue
-                
-            # Get box coordinates
+    if results.boxes is None or len(results.boxes) == 0:
+        print("  No objects detected.")
+        print("--- Exiting draw_yolo_results ---")
+        return annotated_image
+
+    # Iterate through each detected object. Each object has a box and a
+    # corresponding set of keypoints.
+    for i in range(len(results.boxes)):
+        box = results.boxes[i]
+        
+        confidence = float(box.conf[0])
+        class_id = int(box.cls[0])
+        class_name = results.names.get(class_id, f"class_{class_id}")
+        
+        print(f"\n  Processing Object #{i+1}: Class '{class_name}'")
+        print(f"    Box confidence: {confidence:.4f} (threshold: >{confidence_threshold})")
+
+        # --- Draw Bounding Box ---
+        if confidence > confidence_threshold and class_name not in drawn_boxes:
             x1, y1, x2, y2 = box.xyxy[0].tolist()
             
-            # Choose color based on class
             if class_name == 'face':
                 box_color = COLORS['face_box']
             elif class_name == 'juice_tube':
                 box_color = COLORS['juice_tube_box']
             else:
-                box_color = 'white'  # fallback
+                box_color = 'white'
             
-            # Draw bounding box rectangle with thin lines
             draw.rectangle([x1, y1, x2, y2], outline=box_color, width=1)
-            
             drawn_boxes.add(class_name)
             items_drawn += 1
             print(f"    -> DRAWN Box: {class_name} at [{x1:.1f},{y1:.1f},{x2:.1f},{y2:.1f}]")
-    
-    # Process keypoints
-    if results.keypoints is not None:
-        keypoints = results.keypoints
         
-        # Define keypoint names (adjust based on your model)
-        keypoint_names = ['left_pupil', 'right_pupil', 'nose_bridge', 'spout_top', 'spout_bottom']
-        
-        for pose_idx, pose_keypoints in enumerate(keypoints):
-            print(f"\n  Processing Pose #{pose_idx+1} keypoints")
-            xy = pose_keypoints.xy[0]  # Get x,y coordinates
-            conf = pose_keypoints.conf[0] if pose_keypoints.conf is not None else None
+        elif class_name in drawn_boxes:
+            print(f"    -> SKIPPED Box: {class_name} (already drawn), skipping its keypoints.")
+            continue
+        else:
+            print(f"    -> SKIPPED Box: {class_name} (low confidence), skipping its keypoints.")
+            continue
+
+        # --- Draw Keypoints for this object ---
+        if results.keypoints is not None and i < len(results.keypoints.xy):
+            pose_keypoints = results.keypoints[i]
+            xy = pose_keypoints.xy[0]
+            conf = pose_keypoints.conf[0] if pose_keypoints.conf is not None else []
             
+            class_keypoint_names = keypoint_names_by_class.get(class_id, [])
+            print(f"    Found {len(xy)} keypoints for this object.")
+
             for kp_idx, (x, y) in enumerate(xy):
-                # Get keypoint name and confidence
-                kp_name = keypoint_names[kp_idx] if kp_idx < len(keypoint_names) else f"keypoint_{kp_idx}"
-                kp_confidence = float(conf[kp_idx]) if conf is not None else 1.0
+                if kp_idx >= len(class_keypoint_names):
+                    continue
                 
-                print(f"    Keypoint '{kp_name}' confidence: {kp_confidence:.4f} (threshold: >{confidence_threshold})")
+                kp_name = class_keypoint_names[kp_idx]
+                kp_confidence = float(conf[kp_idx]) if kp_idx < len(conf) else 1.0
                 
-                # Skip if below threshold, already drawn, or at (0,0)
+                print(f"      Keypoint '{kp_name}' confidence: {kp_confidence:.4f} (threshold: >{confidence_threshold})")
+                
                 if (kp_confidence <= confidence_threshold or 
                     kp_name in drawn_keypoints or
                     (float(x) == 0 and float(y) == 0)):
+                    
                     if kp_name in drawn_keypoints:
-                        print(f"      -> SKIPPED Keypoint: {kp_name} (already drawn)")
+                        print(f"        -> SKIPPED Keypoint: {kp_name} (already drawn)")
                     elif float(x) == 0 and float(y) == 0:
-                        print(f"      -> SKIPPED Keypoint: {kp_name} (at origin)")
+                        print(f"        -> SKIPPED Keypoint: {kp_name} (at origin)")
                     continue
                 
-                # Choose color based on keypoint name
                 point_color = COLORS.get(kp_name, 'white')
-                
-                # Draw keypoint as a small circle
                 radius = 2
                 x_coord, y_coord = float(x), float(y)
                 draw.ellipse([x_coord-radius, y_coord-radius, x_coord+radius, y_coord+radius], 
@@ -664,8 +670,8 @@ def draw_yolo_results(image, results, confidence_threshold=None):
                 
                 drawn_keypoints.add(kp_name)
                 items_drawn += 1
-                print(f"      -> DRAWN Keypoint: {kp_name} at ({x_coord:.1f}, {y_coord:.1f})")
-    
+                print(f"        -> DRAWN Keypoint: {kp_name} at ({x_coord:.1f}, {y_coord:.1f})")
+
     print(f"\n  Total items drawn: {items_drawn}")
     print("--- Exiting draw_yolo_results ---")
     return annotated_image
