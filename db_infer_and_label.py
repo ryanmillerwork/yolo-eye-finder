@@ -127,7 +127,7 @@ def get_trial_info(conn, trial_id: int):
     try:
         with conn.cursor() as cur:
             # Note: The column in the db is trial_id, not server_trial_id for this table
-            query = "SELECT trialinfo FROM server_trial WHERE trial_id = %s"
+            query = "SELECT trialinfo FROM server_trial WHERE server_trial_id = %s"
             cur.execute(query, (trial_id,))
             record = cur.fetchone()
             if record:
