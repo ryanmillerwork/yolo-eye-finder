@@ -106,18 +106,28 @@ def generate_schematic_frames(trial_info):
     
     catcher_contact_indices = [i for i, body in enumerate(contact_bodies) if body.startswith('catch')]
     if catcher_contact_indices:
-        last_contact_body = contact_bodies[catcher_contact_indices[-1]]
-        chosen_catcher_is_right = last_contact_body.startswith('catchr')
-        
+        # First, determine where the ball actually ended up.
+        ball_landed_right = contact_bodies[catcher_contact_indices[-1]].startswith('catchr')
+
+        # Now, determine which catcher was the "chosen" one based on the trial's outcome.
+        # If correct, chosen is where ball landed. If incorrect, it's the other one.
+        if is_correct:
+            chosen_catcher_was_right = ball_landed_right
+        else:
+            chosen_catcher_was_right = not ball_landed_right
+
+        # Get the timing of the first contact event.
         relative_contact_time = contact_t[catcher_contact_indices[0]]
         absolute_contact_time = selection_time + relative_contact_time
         
+        # The final color depends only on the trial's outcome.
         final_color = GREEN if is_correct else RED
         
-        if chosen_catcher_is_right:
+        # The "chosen" catcher gets the grey color initially, and the final color upon contact.
+        if chosen_catcher_was_right:
             initial_right_color = GREY
             final_right_color = final_color
-        else:
+        else: # Left catcher was chosen
             initial_left_color = GREY
             final_left_color = final_color
             
