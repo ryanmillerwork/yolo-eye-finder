@@ -31,14 +31,14 @@ def world_to_pixel_radius(world_radius):
     return int(world_radius * VIDEO_WIDTH / WORLD_RANGE)
 
 def generate_schematic_frames(trial_info):
-    """Generates schematic video frames and returns them as a list of numpy arrays."""
+    """Generates schematic video frames with a 250ms blank start, returning them as a list."""
     if not trial_info or 'stiminfo' not in trial_info:
         print("Invalid trial_info data.")
         return []
 
     stiminfo = trial_info.get('stiminfo', {})
     
-    # --- Get all required data from stiminfo and trial_info ---
+    # --- Get all required data ---
     rt = trial_info.get('rt', 0)
     ball_t = stiminfo.get('ball_t')
     ball_x = stiminfo.get('ball_x')
@@ -59,20 +59,20 @@ def generate_schematic_frames(trial_info):
         print("Missing ball trajectory or radius data.")
         return []
 
-    # --- Time Calculation ---
-    selection_time = (250 + rt) / 1000.0  # Time before animation starts
+    # --- Time Calculation (for the event part of the video) ---
+    selection_time = (250 + rt) / 1000.0
     animation_duration = ball_t[-1]
-    total_duration = selection_time + animation_duration
+    total_event_duration = selection_time + animation_duration
 
     # --- Pre-calculate Full Ball Trajectory ---
-    total_frames = int(total_duration * FPS)
+    total_event_frames = int(total_event_duration * FPS)
     selection_frame = int(selection_time * FPS)
     
-    interp_x = np.full(total_frames, ball_x[0])
-    interp_y = np.full(total_frames, ball_y[0])
+    interp_x = np.full(total_event_frames, ball_x[0])
+    interp_y = np.full(total_event_frames, ball_y[0])
 
-    if total_frames > selection_frame:
-        animation_frames = total_frames - selection_frame
+    if total_event_frames > selection_frame:
+        animation_frames = total_event_frames - selection_frame
         animation_frame_times = np.linspace(0, animation_duration, animation_frames, endpoint=True)
         interp_x[selection_frame:] = np.interp(animation_frame_times, ball_t, ball_x)
         interp_y[selection_frame:] = np.interp(animation_frame_times, ball_t, ball_y)
@@ -117,19 +117,18 @@ def generate_schematic_frames(trial_info):
         if chosen_catcher_is_right:
             initial_right_color = GREY
             final_right_color = final_color
-        else: # Left catcher chosen
+        else:
             initial_left_color = GREY
             final_left_color = final_color
             
-    frame_times = np.linspace(0, total_duration, total_frames, endpoint=True)
-    print(f"Generating {total_frames} schematic frames... Selection at {selection_time:.2f}s, Contact at {absolute_contact_time if absolute_contact_time != float('inf') else 'N/A'}s")
+    frame_times = np.linspace(0, total_event_duration, total_event_frames, endpoint=True)
+    print(f"Generating {total_event_frames} schematic frames... Selection at {selection_time:.2f}s, Contact at {absolute_contact_time if absolute_contact_time != float('inf') else 'N/A'}s from scene start.")
 
-    # --- Frame Generation ---
-    output_frames = []
+    # --- Frame Generation for the event part of the video ---
+    event_frames = []
     for i, frame_time in enumerate(frame_times):
         frame = np.zeros((VIDEO_HEIGHT, VIDEO_WIDTH, 3), dtype=np.uint8)
-        
-        # Determine current catcher colors based on the frame time
+            
         if frame_time < selection_time:
             left_color, right_color = WHITE, WHITE
         elif frame_time < absolute_contact_time:
@@ -137,20 +136,25 @@ def generate_schematic_frames(trial_info):
         else:
             left_color, right_color = final_left_color, final_right_color
 
-        # Draw all static objects and catchers
         for vertices in plank_vertices: cv2.drawContours(frame, [vertices], 0, WHITE, -1)
         for vertices in left_catcher_vertices: cv2.drawContours(frame, [vertices], 0, left_color, -1)
         for vertices in right_catcher_vertices: cv2.drawContours(frame, [vertices], 0, right_color, -1)
         
-        # Draw the ball at its pre-calculated position for this frame
         px = world_to_pixels(interp_x[i])
         py = VIDEO_HEIGHT - world_to_pixels(interp_y[i]) 
         pr = world_to_pixel_radius(ball_radius)
         cv2.circle(frame, (px, py), pr, CYAN, -1)
 
-        output_frames.append(frame)
+        event_frames.append(frame)
 
-    return output_frames
+    # --- Prepend Blank Frames ---
+    blank_frames_count = int(0.250 * FPS)
+    blank_frame = np.zeros((VIDEO_HEIGHT, VIDEO_WIDTH, 3), dtype=np.uint8)
+    blank_frames = [blank_frame] * blank_frames_count
+    
+    print(f"Prepending {blank_frames_count} blank frames (250ms).")
+    
+    return blank_frames + event_frames
 
 def get_trial_info(conn, trial_id: int):
     """Retrieves the trialinfo for a given trial_id."""
