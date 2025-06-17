@@ -204,8 +204,18 @@ def find_trial_boundaries(candidate_records, trial_end_time):
         current_trial_time = candidate_records[i]['trial_time']
         previous_trial_time = candidate_records[i - 1]['trial_time']
         
+        diff = current_trial_time - previous_trial_time
         print(f"  Index {i}: trial_time {previous_trial_time} -> {current_trial_time} "
-              f"(diff: {current_trial_time - previous_trial_time:+d})")
+              f"(diff: {diff:+d})")
+        
+        if diff == 0:
+            record1 = candidate_records[i-1]
+            record2 = candidate_records[i]
+            time_between_dupes = (record2['client_time'] - record1['client_time']).total_seconds()
+            print(f"  WARNING: Duplicate trial_time ({current_trial_time}) found for sequential records.")
+            print(f"    - Record {i-1}: ID {record1['server_infer_id']}, client_time {record1['client_time']}")
+            print(f"    - Record {i}:   ID {record2['server_infer_id']}, client_time {record2['client_time']}")
+            print(f"    - Time between duplicate records: {time_between_dupes:.4f}s")
         
         # If trial_time drops significantly when going forwards, we've hit the next trial
         if current_trial_time < previous_trial_time and (previous_trial_time - current_trial_time) > 1000:  # 1 second drop
