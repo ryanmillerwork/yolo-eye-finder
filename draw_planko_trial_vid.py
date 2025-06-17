@@ -104,20 +104,28 @@ def generate_schematic_frames(trial_info):
     final_left_color, final_right_color = WHITE, WHITE
     absolute_contact_time = float('inf')
     
-    catcher_contact_indices = [i for i, body in enumerate(contact_bodies) if body.startswith('catch')]
-    if catcher_contact_indices:
-        # First, determine where the ball actually ended up.
-        ball_landed_right = contact_bodies[catcher_contact_indices[-1]].startswith('catchr')
-
-        # Now, determine which catcher was the "chosen" one based on the trial's outcome.
-        # If correct, chosen is where ball landed. If incorrect, it's the other one.
+    # Find the first contact with a catcher *bottom*.
+    first_bottom_contact_idx = -1
+    for i, body in enumerate(contact_bodies):
+        if body == 'catchl_b ball' or body == 'catchr_b ball':
+            first_bottom_contact_idx = i
+            break
+            
+    if first_bottom_contact_idx != -1:
+        # Determine which bottom was hit first.
+        first_contact_was_right = contact_bodies[first_bottom_contact_idx].startswith('catchr')
+        
+        # Determine which catcher to color based on the rules.
+        chosen_catcher_was_right = False
         if is_correct:
-            chosen_catcher_was_right = ball_landed_right
+            # If correct, the one that was hit is the chosen one.
+            chosen_catcher_was_right = first_contact_was_right
         else:
-            chosen_catcher_was_right = not ball_landed_right
+            # If incorrect, the opposite one is chosen.
+            chosen_catcher_was_right = not first_contact_was_right
 
-        # Get the timing of the first contact event.
-        relative_contact_time = contact_t[catcher_contact_indices[0]]
+        # Get the timing of the first bottom contact event.
+        relative_contact_time = contact_t[first_bottom_contact_idx]
         absolute_contact_time = selection_time + relative_contact_time
         
         # The final color depends only on the trial's outcome.
