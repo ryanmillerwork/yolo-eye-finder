@@ -31,14 +31,15 @@ def world_to_pixel_radius(world_radius):
     return int(world_radius * VIDEO_WIDTH / WORLD_RANGE)
 
 def create_ball_video(trial_info, trial_id):
-    """Creates a video of the ball's trajectory and static objects with contact-based coloring."""
+    """Creates a video with initial static period, selection, and contact-based coloring."""
     if not trial_info or 'stiminfo' not in trial_info:
         print("Invalid trial_info data.")
         return
 
     stiminfo = trial_info.get('stiminfo', {})
     
-    # --- Get all required data from stiminfo ---
+    # --- Get all required data from stiminfo and trial_info ---
+    rt = trial_info.get('rt', 0)
     ball_t = stiminfo.get('ball_t')
     ball_x = stiminfo.get('ball_x')
     ball_y = stiminfo.get('ball_y')
@@ -58,6 +59,11 @@ def create_ball_video(trial_info, trial_id):
         print("Missing ball trajectory or radius data.")
         return
 
+    # --- Time Calculation ---
+    selection_time = (250 + rt) / 1000.0  # Time before animation starts
+    animation_duration = ball_t[-1]
+    total_duration = selection_time + animation_duration
+
     # --- Video Setup ---
     output_dir = "/mnt/qpcs/db/db_infer_and_label/planko"
     os.makedirs(output_dir, exist_ok=True)
@@ -65,13 +71,19 @@ def create_ball_video(trial_info, trial_id):
     fourcc = cv2.VideoWriter_fourcc(*'mp4v')
     out = cv2.VideoWriter(video_path, fourcc, FPS, (VIDEO_WIDTH, VIDEO_HEIGHT))
 
-    # --- Trajectory Interpolation for Ball ---
-    duration = ball_t[-1]
-    total_frames = int(duration * FPS)
-    frame_times = np.linspace(0, duration, total_frames, endpoint=True)
-    interp_x = np.interp(frame_times, ball_t, ball_x)
-    interp_y = np.interp(frame_times, ball_t, ball_y)
+    # --- Pre-calculate Full Ball Trajectory ---
+    total_frames = int(total_duration * FPS)
+    selection_frame = int(selection_time * FPS)
     
+    interp_x = np.full(total_frames, ball_x[0])
+    interp_y = np.full(total_frames, ball_y[0])
+
+    if total_frames > selection_frame:
+        animation_frames = total_frames - selection_frame
+        animation_frame_times = np.linspace(0, animation_duration, animation_frames, endpoint=True)
+        interp_x[selection_frame:] = np.interp(animation_frame_times, ball_t, ball_x)
+        interp_y[selection_frame:] = np.interp(animation_frame_times, ball_t, ball_y)
+
     # --- Separate and Pre-calculate Static Object Vertices ---
     plank_vertices, left_catcher_vertices, right_catcher_vertices = [], [], []
     for i, name in enumerate(names):
@@ -97,15 +109,15 @@ def create_ball_video(trial_info, trial_id):
     # --- Determine Catcher Colors and Contact Time ---
     initial_left_color, initial_right_color = WHITE, WHITE
     final_left_color, final_right_color = WHITE, WHITE
-    contact_time = float('inf')
+    absolute_contact_time = float('inf')
     
     catcher_contact_indices = [i for i, body in enumerate(contact_bodies) if body.startswith('catch')]
     if catcher_contact_indices:
         last_contact_body = contact_bodies[catcher_contact_indices[-1]]
         chosen_catcher_is_right = last_contact_body.startswith('catchr')
         
-        first_contact_idx = catcher_contact_indices[0]
-        contact_time = contact_t[first_contact_idx]
+        relative_contact_time = contact_t[catcher_contact_indices[0]]
+        absolute_contact_time = selection_time + relative_contact_time
         
         final_color = GREEN if is_correct else RED
         
@@ -115,19 +127,28 @@ def create_ball_video(trial_info, trial_id):
         else: # Left catcher chosen
             initial_left_color = GREY
             final_left_color = final_color
-
-    print(f"Generating {total_frames} frames... Contact time: {contact_time if contact_time != float('inf') else 'N/A'}")
+            
+    frame_times = np.linspace(0, total_duration, total_frames, endpoint=True)
+    print(f"Generating {total_frames} frames... Selection at {selection_time:.2f}s, Contact at {absolute_contact_time if absolute_contact_time != float('inf') else 'N/A'}s")
 
     # --- Frame Generation ---
     for i, frame_time in enumerate(frame_times):
         frame = np.zeros((VIDEO_HEIGHT, VIDEO_WIDTH, 3), dtype=np.uint8)
         
-        left_color, right_color = (final_left_color, final_right_color) if frame_time >= contact_time else (initial_left_color, initial_right_color)
+        # Determine current catcher colors based on the frame time
+        if frame_time < selection_time:
+            left_color, right_color = WHITE, WHITE
+        elif frame_time < absolute_contact_time:
+            left_color, right_color = initial_left_color, initial_right_color
+        else:
+            left_color, right_color = final_left_color, final_right_color
 
+        # Draw all static objects and catchers
         for vertices in plank_vertices: cv2.drawContours(frame, [vertices], 0, WHITE, -1)
         for vertices in left_catcher_vertices: cv2.drawContours(frame, [vertices], 0, left_color, -1)
         for vertices in right_catcher_vertices: cv2.drawContours(frame, [vertices], 0, right_color, -1)
         
+        # Draw the ball at its pre-calculated position for this frame
         px = world_to_pixels(interp_x[i])
         py = VIDEO_HEIGHT - world_to_pixels(interp_y[i]) 
         pr = world_to_pixel_radius(ball_radius)
