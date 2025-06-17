@@ -9,12 +9,17 @@ import numpy as np
 # Hardcoded trial ID for testing
 TRIAL_ID = 431370
 
-# Video settings
+# --- Video & World Settings ---
 VIDEO_WIDTH = 1000
 VIDEO_HEIGHT = 1000
 FPS = 60
-# Game world coordinates are roughly -10 to 10 in x and y
-WORLD_RANGE = 20.0
+WORLD_RANGE = 20.0 # Game world coordinates are roughly -10 to 10
+
+# --- Color Definitions (BGR for OpenCV) ---
+WHITE = (255, 255, 255)
+CYAN = (255, 255, 0)
+GREEN = (0, 255, 0)
+RED = (0, 0, 255)
 
 def world_to_pixels(world_coord):
     """Scales a single world coordinate to a pixel coordinate."""
@@ -25,37 +30,37 @@ def world_to_pixel_radius(world_radius):
     return int(world_radius * VIDEO_WIDTH / WORLD_RANGE)
 
 def create_ball_video(trial_info, trial_id):
-    """Creates a video of the ball's trajectory and static objects (planks, catchers)."""
+    """Creates a video of the ball's trajectory and static objects with contact-based coloring."""
     if not trial_info or 'stiminfo' not in trial_info:
         print("Invalid trial_info data.")
         return
 
     stiminfo = trial_info.get('stiminfo', {})
     
-    # --- Get Ball Data ---
+    # --- Get all required data from stiminfo ---
     ball_t = stiminfo.get('ball_t')
     ball_x = stiminfo.get('ball_x')
     ball_y = stiminfo.get('ball_y')
     ball_radius = stiminfo.get('ball_radius')
-
-    if not all([ball_t, ball_x, ball_y, ball_radius is not None]):
-        print("Missing ball trajectory or radius data.")
-        return
-
-    # --- Get Static Object Data ---
     names = stiminfo.get('name', [])
     shapes = stiminfo.get('shape', [])
     sx = stiminfo.get('sx', [])
     sy = stiminfo.get('sy', [])
     tx = stiminfo.get('tx', [])
     ty = stiminfo.get('ty', [])
-    angles = stiminfo.get('angle', []) # Radians
+    angles = stiminfo.get('angle', [])
+    contact_bodies = stiminfo.get('contact_bodies', [])
+    contact_t = stiminfo.get('contact_t', [])
+    is_correct = trial_info.get('status') == 1
+
+    if not all([ball_t, ball_x, ball_y, ball_radius is not None]):
+        print("Missing ball trajectory or radius data.")
+        return
 
     # --- Video Setup ---
     output_dir = "/mnt/qpcs/db/db_infer_and_label/planko"
     os.makedirs(output_dir, exist_ok=True)
     video_path = os.path.join(output_dir, f"trial-{trial_id}.mp4")
-
     fourcc = cv2.VideoWriter_fourcc(*'mp4v')
     out = cv2.VideoWriter(video_path, fourcc, FPS, (VIDEO_WIDTH, VIDEO_HEIGHT))
 
@@ -66,53 +71,66 @@ def create_ball_video(trial_info, trial_id):
     interp_x = np.interp(frame_times, ball_t, ball_x)
     interp_y = np.interp(frame_times, ball_t, ball_y)
     
-    # --- Pre-calculate Static Object Vertices in Pixel Coordinates ---
-    static_object_vertices = []
+    # --- Separate and Pre-calculate Static Object Vertices ---
+    plank_vertices, left_catcher_vertices, right_catcher_vertices = [], [], []
     for i, name in enumerate(names):
-        if ('plank' in name or 'catch' in name) and i < len(shapes) and shapes[i] == 'Box':
-            # Convert world coordinates and dimensions to pixel values
-            px_x = world_to_pixels(tx[i])
-            px_y = VIDEO_HEIGHT - world_to_pixels(ty[i])
-            px_w = world_to_pixel_radius(sx[i])
-            px_h = world_to_pixel_radius(sy[i])
-            
-            # Define corners of unrotated rectangle at origin
+        if i < len(shapes) and shapes[i] == 'Box':
+            px_x, px_y = world_to_pixels(tx[i]), VIDEO_HEIGHT - world_to_pixels(ty[i])
+            px_w, px_h = world_to_pixel_radius(sx[i]), world_to_pixel_radius(sy[i])
             half_w, half_h = px_w / 2, px_h / 2
-            rect_corners = np.array([
-                [-half_w, -half_h], [half_w, -half_h], [half_w, half_h], [-half_w, half_h]
-            ])
-
-            # Create rotation matrix. World Y is up, pixel Y is down, so negate angle.
-            angle_rad = angles[i]
-            cos_a, sin_a = np.cos(-angle_rad), np.sin(-angle_rad)
-            rot_matrix = np.array([[cos_a, -sin_a], [sin_a, cos_a]])
-
-            # Rotate corners around origin, then translate to final position
-            rotated_corners = (rot_matrix @ rect_corners.T).T
-            translated_corners = rotated_corners + [px_x, px_y]
             
-            static_object_vertices.append(translated_corners.astype(np.int32))
+            rect_corners = np.array([[-half_w, -half_h], [half_w, -half_h], [half_w, half_h], [-half_w, half_h]])
+            cos_a, sin_a = np.cos(-angles[i]), np.sin(-angles[i])
+            rot_matrix = np.array([[cos_a, -sin_a], [sin_a, cos_a]])
+            
+            translated_corners = (rot_matrix @ rect_corners.T).T + [px_x, px_y]
+            vertices = translated_corners.astype(np.int32)
+            
+            if 'plank' in name:
+                plank_vertices.append(vertices)
+            elif 'catchl' in name:
+                left_catcher_vertices.append(vertices)
+            elif 'catchr' in name:
+                right_catcher_vertices.append(vertices)
 
-    print(f"Generating {total_frames} frames for a {duration:.2f}s video with {len(static_object_vertices)} static objects...")
+    # --- Determine Catcher Colors and Contact Time ---
+    catcher_contact_indices = [i for i, body in enumerate(contact_bodies) if body.startswith('catch')]
+    contact_time = float('inf')
+    left_color, right_color = WHITE, WHITE
+    final_left_color, final_right_color = WHITE, WHITE
+
+    if catcher_contact_indices:
+        first_contact_idx = catcher_contact_indices[0]
+        last_contact_idx = catcher_contact_indices[-1]
+        contact_time = contact_t[first_contact_idx]
+        last_contact_body = contact_bodies[last_contact_idx]
+
+        chosen_catcher_is_right = last_contact_body.startswith('catchr')
+        
+        if is_correct:
+            final_right_color = GREEN if chosen_catcher_is_right else WHITE
+            final_left_color = GREEN if not chosen_catcher_is_right else WHITE
+        else: # Incorrect
+            final_right_color = RED if not chosen_catcher_is_right else WHITE
+            final_left_color = RED if chosen_catcher_is_right else WHITE
+
+    print(f"Generating {total_frames} frames... Contact time: {contact_time if contact_time != float('inf') else 'N/A'}")
 
     # --- Frame Generation ---
-    for i in range(total_frames):
+    for i, frame_time in enumerate(frame_times):
         frame = np.zeros((VIDEO_HEIGHT, VIDEO_WIDTH, 3), dtype=np.uint8)
         
-        # Draw all static objects
-        for vertices in static_object_vertices:
-            cv2.drawContours(frame, [vertices], 0, (255, 255, 255), -1)
-        
-        # Get interpolated ball position for the current frame
-        x, y = interp_x[i], interp_y[i]
-        
-        # Convert world coordinates to pixel coordinates for drawing
-        px = world_to_pixels(x)
-        py = VIDEO_HEIGHT - world_to_pixels(y) 
-        pr = world_to_pixel_radius(ball_radius)
+        if frame_time >= contact_time:
+            left_color, right_color = final_left_color, final_right_color
 
-        # Draw the ball (a white circle)
-        cv2.circle(frame, (px, py), pr, (255, 255, 255), -1)
+        for vertices in plank_vertices: cv2.drawContours(frame, [vertices], 0, WHITE, -1)
+        for vertices in left_catcher_vertices: cv2.drawContours(frame, [vertices], 0, left_color, -1)
+        for vertices in right_catcher_vertices: cv2.drawContours(frame, [vertices], 0, right_color, -1)
+        
+        px = world_to_pixels(interp_x[i])
+        py = VIDEO_HEIGHT - world_to_pixels(interp_y[i]) 
+        pr = world_to_pixel_radius(ball_radius)
+        cv2.circle(frame, (px, py), pr, CYAN, -1)
 
         out.write(frame)
 
