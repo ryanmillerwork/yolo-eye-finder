@@ -126,7 +126,6 @@ def get_trial_info(conn, trial_id: int):
     """Retrieves the trialinfo for a given trial_id."""
     try:
         with conn.cursor() as cur:
-            # Note: The column in the db is trial_id, not server_trial_id for this table
             query = "SELECT trialinfo FROM server_trial WHERE server_trial_id = %s"
             cur.execute(query, (trial_id,))
             record = cur.fetchone()
@@ -441,15 +440,22 @@ def process_trial_video(conn, model, trial_id, fps=None):
                 unprocessed_image = Image.open(image_stream).convert("RGB")
                 pil_image = correct_image_orientation(unprocessed_image)
                 
-                # Use stored labels if model isn't provided
-                if not model:
+                final_image = pil_image # Default to the corrected image
+
+                if model:
+                    # Run new inference
+                    results = model(pil_image, conf=CONF_THRESHOLD, verbose=False)
+                    if results and results[0].boxes:
+                        final_image = draw_yolo_results(pil_image, results[0])
+                else:
+                    # Use stored labels if model isn't provided
                     stored_labels = record.get('infer_label')
                     if stored_labels:
-                        pil_image = draw_stored_labels(pil_image, stored_labels)
+                        final_image = draw_stored_labels(pil_image, stored_labels)
                 
                 # Time relative to the start of the trial
                 relative_time = (timestamp - first_timestamp).total_seconds()
-                real_frames_with_ts.append({'image': pil_image, 'time': relative_time})
+                real_frames_with_ts.append({'image': final_image, 'time': relative_time})
                 
             except Exception as e:
                 print(f"Failed to process camera image for ID {server_id}: {e}", file=sys.stderr)
@@ -489,12 +495,11 @@ def process_trial_video(conn, model, trial_id, fps=None):
             target_w = int(target_h * real_w / real_h)
             resized_real = current_real_frame.resize((target_w, target_h), Image.LANCZOS)
             
-            # Convert both to OpenCV format for concatenation
-            schematic_bgr = cv2.cvtColor(schematic_frame, cv2.COLOR_RGB2BGR)
+            # Convert real frame to BGR. The schematic is already BGR.
             real_bgr = cv2.cvtColor(np.array(resized_real), cv2.COLOR_RGB2BGR)
             
             # Stitch frames side-by-side
-            combined_frame = cv2.hconcat([real_bgr, schematic_bgr])
+            combined_frame = cv2.hconcat([real_bgr, schematic_frame])
             out.write(combined_frame)
 
         out.release()
