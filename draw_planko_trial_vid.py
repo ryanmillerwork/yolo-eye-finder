@@ -20,6 +20,7 @@ WHITE = (255, 255, 255)
 CYAN = (255, 255, 0)
 GREEN = (0, 255, 0)
 RED = (0, 0, 255)
+GREY = (128, 128, 128)
 
 def world_to_pixels(world_coord):
     """Scales a single world coordinate to a pixel coordinate."""
@@ -94,25 +95,26 @@ def create_ball_video(trial_info, trial_id):
                 right_catcher_vertices.append(vertices)
 
     # --- Determine Catcher Colors and Contact Time ---
-    catcher_contact_indices = [i for i, body in enumerate(contact_bodies) if body.startswith('catch')]
-    contact_time = float('inf')
-    left_color, right_color = WHITE, WHITE
+    initial_left_color, initial_right_color = WHITE, WHITE
     final_left_color, final_right_color = WHITE, WHITE
-
+    contact_time = float('inf')
+    
+    catcher_contact_indices = [i for i, body in enumerate(contact_bodies) if body.startswith('catch')]
     if catcher_contact_indices:
-        first_contact_idx = catcher_contact_indices[0]
-        last_contact_idx = catcher_contact_indices[-1]
-        contact_time = contact_t[first_contact_idx]
-        last_contact_body = contact_bodies[last_contact_idx]
-
+        last_contact_body = contact_bodies[catcher_contact_indices[-1]]
         chosen_catcher_is_right = last_contact_body.startswith('catchr')
         
-        if is_correct:
-            final_right_color = GREEN if chosen_catcher_is_right else WHITE
-            final_left_color = GREEN if not chosen_catcher_is_right else WHITE
-        else: # Incorrect
-            final_right_color = RED if not chosen_catcher_is_right else WHITE
-            final_left_color = RED if chosen_catcher_is_right else WHITE
+        first_contact_idx = catcher_contact_indices[0]
+        contact_time = contact_t[first_contact_idx]
+        
+        final_color = GREEN if is_correct else RED
+        
+        if chosen_catcher_is_right:
+            initial_right_color = GREY
+            final_right_color = final_color
+        else: # Left catcher chosen
+            initial_left_color = GREY
+            final_left_color = final_color
 
     print(f"Generating {total_frames} frames... Contact time: {contact_time if contact_time != float('inf') else 'N/A'}")
 
@@ -120,8 +122,7 @@ def create_ball_video(trial_info, trial_id):
     for i, frame_time in enumerate(frame_times):
         frame = np.zeros((VIDEO_HEIGHT, VIDEO_WIDTH, 3), dtype=np.uint8)
         
-        if frame_time >= contact_time:
-            left_color, right_color = final_left_color, final_right_color
+        left_color, right_color = (final_left_color, final_right_color) if frame_time >= contact_time else (initial_left_color, initial_right_color)
 
         for vertices in plank_vertices: cv2.drawContours(frame, [vertices], 0, WHITE, -1)
         for vertices in left_catcher_vertices: cv2.drawContours(frame, [vertices], 0, left_color, -1)
