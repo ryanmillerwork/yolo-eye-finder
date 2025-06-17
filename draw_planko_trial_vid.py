@@ -25,7 +25,7 @@ def world_to_pixel_radius(world_radius):
     return int(world_radius * VIDEO_WIDTH / WORLD_RANGE)
 
 def create_ball_video(trial_info, trial_id):
-    """Creates a video of the ball's trajectory and static planks."""
+    """Creates a video of the ball's trajectory and static objects (planks, catchers)."""
     if not trial_info or 'stiminfo' not in trial_info:
         print("Invalid trial_info data.")
         return
@@ -42,7 +42,7 @@ def create_ball_video(trial_info, trial_id):
         print("Missing ball trajectory or radius data.")
         return
 
-    # --- Get Plank Data ---
+    # --- Get Static Object Data ---
     names = stiminfo.get('name', [])
     shapes = stiminfo.get('shape', [])
     sx = stiminfo.get('sx', [])
@@ -66,14 +66,14 @@ def create_ball_video(trial_info, trial_id):
     interp_x = np.interp(frame_times, ball_t, ball_x)
     interp_y = np.interp(frame_times, ball_t, ball_y)
     
-    # --- Pre-calculate Plank Vertices in Pixel Coordinates ---
-    plank_vertices = []
+    # --- Pre-calculate Static Object Vertices in Pixel Coordinates ---
+    static_object_vertices = []
     for i, name in enumerate(names):
-        if 'plank' in name and i < len(shapes) and shapes[i] == 'Box':
+        if ('plank' in name or 'catch' in name) and i < len(shapes) and shapes[i] == 'Box':
             # Convert world coordinates and dimensions to pixel values
             px_x = world_to_pixels(tx[i])
             px_y = VIDEO_HEIGHT - world_to_pixels(ty[i])
-            px_w = world_to_pixel_radius(sx[i]) # Reusing this function as it just scales a length
+            px_w = world_to_pixel_radius(sx[i])
             px_h = world_to_pixel_radius(sy[i])
             
             # Define corners of unrotated rectangle at origin
@@ -91,16 +91,16 @@ def create_ball_video(trial_info, trial_id):
             rotated_corners = (rot_matrix @ rect_corners.T).T
             translated_corners = rotated_corners + [px_x, px_y]
             
-            plank_vertices.append(translated_corners.astype(np.int32))
+            static_object_vertices.append(translated_corners.astype(np.int32))
 
-    print(f"Generating {total_frames} frames for a {duration:.2f}s video with {len(plank_vertices)} planks...")
+    print(f"Generating {total_frames} frames for a {duration:.2f}s video with {len(static_object_vertices)} static objects...")
 
     # --- Frame Generation ---
     for i in range(total_frames):
         frame = np.zeros((VIDEO_HEIGHT, VIDEO_WIDTH, 3), dtype=np.uint8)
         
-        # Draw all static planks
-        for vertices in plank_vertices:
+        # Draw all static objects
+        for vertices in static_object_vertices:
             cv2.drawContours(frame, [vertices], 0, (255, 255, 255), -1)
         
         # Get interpolated ball position for the current frame
