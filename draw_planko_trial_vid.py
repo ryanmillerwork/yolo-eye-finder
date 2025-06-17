@@ -30,11 +30,11 @@ def world_to_pixel_radius(world_radius):
     """Scales a world radius to a pixel radius."""
     return int(world_radius * VIDEO_WIDTH / WORLD_RANGE)
 
-def create_ball_video(trial_info, trial_id):
-    """Creates a video with initial static period, selection, and contact-based coloring."""
+def generate_schematic_frames(trial_info):
+    """Generates schematic video frames and returns them as a list of numpy arrays."""
     if not trial_info or 'stiminfo' not in trial_info:
         print("Invalid trial_info data.")
-        return
+        return []
 
     stiminfo = trial_info.get('stiminfo', {})
     
@@ -57,19 +57,12 @@ def create_ball_video(trial_info, trial_id):
 
     if not all([ball_t, ball_x, ball_y, ball_radius is not None]):
         print("Missing ball trajectory or radius data.")
-        return
+        return []
 
     # --- Time Calculation ---
     selection_time = (250 + rt) / 1000.0  # Time before animation starts
     animation_duration = ball_t[-1]
     total_duration = selection_time + animation_duration
-
-    # --- Video Setup ---
-    output_dir = "/mnt/qpcs/db/db_infer_and_label/planko"
-    os.makedirs(output_dir, exist_ok=True)
-    video_path = os.path.join(output_dir, f"trial-{trial_id}.mp4")
-    fourcc = cv2.VideoWriter_fourcc(*'mp4v')
-    out = cv2.VideoWriter(video_path, fourcc, FPS, (VIDEO_WIDTH, VIDEO_HEIGHT))
 
     # --- Pre-calculate Full Ball Trajectory ---
     total_frames = int(total_duration * FPS)
@@ -129,9 +122,10 @@ def create_ball_video(trial_info, trial_id):
             final_left_color = final_color
             
     frame_times = np.linspace(0, total_duration, total_frames, endpoint=True)
-    print(f"Generating {total_frames} frames... Selection at {selection_time:.2f}s, Contact at {absolute_contact_time if absolute_contact_time != float('inf') else 'N/A'}s")
+    print(f"Generating {total_frames} schematic frames... Selection at {selection_time:.2f}s, Contact at {absolute_contact_time if absolute_contact_time != float('inf') else 'N/A'}s")
 
     # --- Frame Generation ---
+    output_frames = []
     for i, frame_time in enumerate(frame_times):
         frame = np.zeros((VIDEO_HEIGHT, VIDEO_WIDTH, 3), dtype=np.uint8)
         
@@ -154,10 +148,9 @@ def create_ball_video(trial_info, trial_id):
         pr = world_to_pixel_radius(ball_radius)
         cv2.circle(frame, (px, py), pr, CYAN, -1)
 
-        out.write(frame)
+        output_frames.append(frame)
 
-    out.release()
-    print(f"Video saved to {video_path}")
+    return output_frames
 
 def get_trial_info(conn, trial_id: int):
     """Retrieves the trialinfo for a given trial_id."""
@@ -174,7 +167,7 @@ def get_trial_info(conn, trial_id: int):
         return None
 
 def main():
-    """Main function to fetch and print trial info."""
+    """Main function to fetch trial info and save a standalone schematic video."""
     load_dotenv()
     db_password = os.getenv("PG_PASS")
     if not db_password:
@@ -195,7 +188,21 @@ def main():
         trial_info = get_trial_info(conn, TRIAL_ID)
 
         if trial_info:
-            create_ball_video(trial_info, TRIAL_ID)
+            frames = generate_schematic_frames(trial_info)
+            if frames:
+                # --- Video Setup ---
+                output_dir = "/mnt/qpcs/db/db_infer_and_label/planko"
+                os.makedirs(output_dir, exist_ok=True)
+                video_path = os.path.join(output_dir, f"trial-{TRIAL_ID}.mp4")
+                fourcc = cv2.VideoWriter_fourcc(*'mp4v')
+                out = cv2.VideoWriter(video_path, fourcc, FPS, (VIDEO_WIDTH, VIDEO_HEIGHT))
+                
+                print(f"Saving {len(frames)} frames to {video_path}...")
+                for frame in frames:
+                    out.write(frame)
+                
+                out.release()
+                print("Video saved successfully.")
         else:
             print(f"No trial info found for trial_id {TRIAL_ID}")
 

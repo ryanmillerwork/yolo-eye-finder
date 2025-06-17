@@ -10,6 +10,7 @@ from PIL import Image, ImageDraw, ImageFont
 import numpy as np # For robust image rotation
 from ultralytics import YOLO
 import cv2  # OpenCV is used for color conversion and video creation
+import draw_planko_trial_vid as planko
 
 
 # python db_infer_and_label.py --mode trial-video --trial-id 431370 --model-path ./models/HB-eyes-1500_small.pt
@@ -119,6 +120,21 @@ def get_inferences_by_trial_id(conn, trial_id: int):
             return records
     except (Exception, psycopg2.Error) as error:
         print(f"Error fetching records for trial {trial_id}: {error}")
+        return None
+
+def get_trial_info(conn, trial_id: int):
+    """Retrieves the trialinfo for a given trial_id."""
+    try:
+        with conn.cursor() as cur:
+            # Note: The column in the db is trial_id, not server_trial_id for this table
+            query = "SELECT trialinfo FROM server_trial WHERE trial_id = %s"
+            cur.execute(query, (trial_id,))
+            record = cur.fetchone()
+            if record:
+                return record['trialinfo']
+            return None
+    except (Exception, psycopg2.Error) as error:
+        print(f"Error fetching trial info for trial {trial_id}: {error}")
         return None
 
 def correct_image_orientation(image):
@@ -269,54 +285,6 @@ def draw_stored_labels(image, labels_json, confidence_threshold=None):
     print("--- Exiting draw_stored_labels ---")
     return annotated_image
 
-def create_trial_video(processed_images, output_path, fps=30):
-    """
-    Create a video from a list of processed images.
-    
-    Args:
-        processed_images (list): List of PIL Image objects
-        output_path (str): Path where the video should be saved
-        fps (int): Frames per second for the output video
-        
-    Returns:
-        bool: True if successful, False if failed
-    """
-    if not processed_images:
-        print("No images to create video from")
-        return False
-    
-    try:
-        # Get dimensions from the first image
-        first_image = processed_images[0]
-        width, height = first_image.size
-        
-        # Define the codec and create VideoWriter object
-        fourcc = cv2.VideoWriter_fourcc(*'mp4v')
-        video_writer = cv2.VideoWriter(output_path, fourcc, fps, (width, height))
-        
-        print(f"Creating video with {len(processed_images)} frames at {fps} FPS")
-        print(f"Video dimensions: {width}x{height}")
-        
-        for i, pil_image in enumerate(processed_images):
-            # Convert PIL image to OpenCV format (BGR)
-            rgb_array = np.array(pil_image)
-            bgr_array = cv2.cvtColor(rgb_array, cv2.COLOR_RGB2BGR)
-            
-            # Write the frame
-            video_writer.write(bgr_array)
-            
-            if (i + 1) % 50 == 0:  # Progress update every 50 frames
-                print(f"  Processed {i + 1}/{len(processed_images)} frames")
-        
-        # Release the video writer
-        video_writer.release()
-        print(f"Video successfully saved to: {output_path}")
-        return True
-        
-    except Exception as e:
-        print(f"Error creating video: {e}")
-        return False
-
 def process_single_image(conn, model, server_id, mode='inference'):
     """
     Process a single image according to the specified mode.
@@ -423,8 +391,7 @@ def process_single_image(conn, model, server_id, mode='inference'):
 
 def process_trial_video(conn, model, trial_id, fps=None):
     """
-    Process all images for a trial and create a video.
-    If a model is provided, it runs inference. Otherwise, it uses stored labels.
+    Generates a side-by-side video of the real camera view and a physics schematic.
     
     Args:
         conn: Database connection
@@ -436,121 +403,106 @@ def process_trial_video(conn, model, trial_id, fps=None):
         bool: True if successful, False if failed
     """
     try:
-        print(f"\n--- Processing Trial Video: {trial_id} ---")
-        if model:
-            print("Mode: Re-running inference with provided model.")
-        else:
-            print("Mode: Using stored labels from database.")
+        print(f"\n--- Processing Combined Trial Video: {trial_id} ---")
         
-        # Get all inference records for this trial
-        records = get_inferences_by_trial_id(conn, trial_id)
-        
-        if not records:
-            print(f"No records found for trial_id: {trial_id}", file=sys.stderr)
+        # --- 1. Generate Schematic Frames ---
+        trial_info = get_trial_info(conn, trial_id)
+        if not trial_info:
+            print(f"Could not retrieve trialinfo for {trial_id}. Aborting.", file=sys.stderr)
             return False
         
-        print(f"Found {len(records)} images for trial {trial_id}")
-        
-        # Ensure output directory exists
-        try:
-            output_dir = ensure_output_dir_exists('trial-video')
-        except ValueError as e:
-            print(f"Error: {e}", file=sys.stderr)
+        schematic_frames = planko.generate_schematic_frames(trial_info)
+        if not schematic_frames:
+            print("Failed to generate schematic frames. Aborting.", file=sys.stderr)
             return False
-        
-        processed_images = []
-        successful_count = 0
-        failed_count = 0
-        
-        for i, record in enumerate(records):
-            server_id = record.get('server_infer_id')
-            print(f"\nProcessing frame {i+1}/{len(records)} (ID: {server_id})")
             
+        schematic_height, schematic_width, _ = schematic_frames[0].shape
+        
+        # --- 2. Get Real Camera Frames and Timestamps ---
+        records = get_inferences_by_trial_id(conn, trial_id)
+        if not records:
+            print(f"No camera records found for trial_id: {trial_id}", file=sys.stderr)
+            return False
+        
+        real_frames_with_ts = []
+        first_timestamp = records[0].get('client_time')
+
+        for record in records:
+            server_id = record.get('server_infer_id')
             input_data_bytes = record.get('input_data')
-            if not input_data_bytes:
-                print(f"Record {server_id} has no image data (input_data is null).", file=sys.stderr)
-                failed_count += 1
+            timestamp = record.get('client_time')
+
+            if not input_data_bytes or not timestamp:
+                print(f"Skipping record {server_id} due to missing data.", file=sys.stderr)
                 continue
 
             try:
-                # Load and correct image
                 image_stream = io.BytesIO(input_data_bytes)
                 unprocessed_image = Image.open(image_stream).convert("RGB")
                 pil_image = correct_image_orientation(unprocessed_image)
-
-                final_image = pil_image # Default to raw image
                 
-                if model:
-                    # Run new inference
-                    print("  Running inference...")
-                    results = model(pil_image, conf=CONF_THRESHOLD, verbose=False)
-                    if results:
-                        result = results[0]
-                        print(f"  Inference complete. Detected {len(result.keypoints) if result.keypoints else 0} poses.")
-                        final_image = draw_yolo_results(pil_image, result)
-                    else:
-                        print("  Inference did not return any results object.")
-                else:
-                    # Get stored inference results
+                # Use stored labels if model isn't provided
+                if not model:
                     stored_labels = record.get('infer_label')
                     if stored_labels:
-                        # Use stored labels with custom drawing function
-                        final_image = draw_stored_labels(pil_image, stored_labels)
-                    else:
-                        print(f"  Record {server_id} has no stored labels (infer_label is null). Using raw image.")
+                        pil_image = draw_stored_labels(pil_image, stored_labels)
                 
-                processed_images.append(final_image)
-                successful_count += 1
+                # Time relative to the start of the trial
+                relative_time = (timestamp - first_timestamp).total_seconds()
+                real_frames_with_ts.append({'image': pil_image, 'time': relative_time})
                 
             except Exception as e:
-                print(f"Failed to process image for ID {server_id}: {e}", file=sys.stderr)
-                failed_count += 1
-                continue
+                print(f"Failed to process camera image for ID {server_id}: {e}", file=sys.stderr)
         
-        if not processed_images:
-            print(f"No images were successfully processed for trial {trial_id}", file=sys.stderr)
+        if not real_frames_with_ts:
+            print("No camera frames were successfully processed.", file=sys.stderr)
             return False
-        
-        # Infer FPS from timestamps if not provided
-        if fps is None:
-            if len(records) > 1:
-                time_deltas = []
-                for i in range(len(records) - 1):
-                    time1 = records[i]['client_time']
-                    time2 = records[i+1]['client_time']
-                    if time1 and time2:
-                        delta = (time2 - time1).total_seconds()
-                        if delta > 0: # Avoid division by zero or negative time travel
-                            time_deltas.append(delta)
-                
-                if time_deltas:
-                    avg_delta = sum(time_deltas) / len(time_deltas)
-                    inferred_fps = round(1 / avg_delta)
-                    print(f"Inferred FPS: {inferred_fps} (from {len(time_deltas)} valid time deltas)")
-                    fps = inferred_fps
-                else:
-                    print("Could not infer FPS from timestamps (no valid deltas). Defaulting to 30.")
-                    fps = 30
-            else:
-                print("Not enough frames to infer FPS. Defaulting to 30.")
-                fps = 30
-        else:
-            print(f"Using user-specified FPS: {fps}")
 
-        # Create video
-        video_filename = os.path.join(output_dir, f"trial_{trial_id}.mp4")
-        video_success = create_trial_video(processed_images, video_filename, fps)
+        # --- 3. Combine Videos with Time Synchronization ---
+        output_dir = ensure_output_dir_exists('trial-video')
+        video_filename = os.path.join(output_dir, f"trial_{trial_id}_combined.mp4")
         
-        # Summary
-        print(f"\n--- Trial {trial_id} Processing Complete ---")
-        print(f"Successfully processed: {successful_count}")
-        print(f"Failed: {failed_count}")
-        print(f"Total frames in video: {len(processed_images)}")
+        # The master FPS is the schematic's FPS
+        master_fps = planko.FPS 
         
-        return video_success
+        fourcc = cv2.VideoWriter_fourcc(*'mp4v')
+        # Final video width is schematic + real (resized)
+        final_width = schematic_width + int(schematic_height * real_frames_with_ts[0]['image'].width / real_frames_with_ts[0]['image'].height)
+        out = cv2.VideoWriter(video_filename, fourcc, master_fps, (final_width, schematic_height))
+
+        print(f"Combining videos into {video_filename} at {master_fps} FPS...")
+        
+        real_frame_idx = 0
+        current_real_frame = real_frames_with_ts[0]['image']
+
+        for i, schematic_frame in enumerate(schematic_frames):
+            frame_time = i / master_fps
+            
+            # Check if it's time to switch to the next real frame
+            if real_frame_idx + 1 < len(real_frames_with_ts) and frame_time >= real_frames_with_ts[real_frame_idx + 1]['time']:
+                real_frame_idx += 1
+                current_real_frame = real_frames_with_ts[real_frame_idx]['image']
+            
+            # Resize real frame to match schematic height
+            real_h, real_w = current_real_frame.height, current_real_frame.width
+            target_h = schematic_height
+            target_w = int(target_h * real_w / real_h)
+            resized_real = current_real_frame.resize((target_w, target_h), Image.LANCZOS)
+            
+            # Convert both to OpenCV format for concatenation
+            schematic_bgr = cv2.cvtColor(schematic_frame, cv2.COLOR_RGB2BGR)
+            real_bgr = cv2.cvtColor(np.array(resized_real), cv2.COLOR_RGB2BGR)
+            
+            # Stitch frames side-by-side
+            combined_frame = cv2.hconcat([real_bgr, schematic_bgr])
+            out.write(combined_frame)
+
+        out.release()
+        print("Combined video creation successful.")
+        return True
         
     except Exception as e:
-        print(f"Error processing trial {trial_id}: {e}", file=sys.stderr)
+        print(f"An unexpected error occurred in process_trial_video: {e}", file=sys.stderr)
         return False
 
 def draw_yolo_results(image, results, confidence_threshold=None):
