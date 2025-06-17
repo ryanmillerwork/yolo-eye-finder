@@ -11,6 +11,9 @@ import numpy as np # For robust image rotation
 from ultralytics import YOLO
 import cv2  # OpenCV is used for color conversion and video creation
 
+
+# python db_infer_and_label.py --mode trial-video --trial-id 431370 --fps 10
+
 # --- Configuration ---
 MODEL_PATH = "./models/HB-eyes-1500_small.pt"
 CONF_THRESHOLD = 0.5  # Confidence threshold for drawing detections
@@ -418,21 +421,26 @@ def process_single_image(conn, model, server_id, mode='inference'):
         print(f"Error processing ID {server_id}: {e}", file=sys.stderr)
         return False
 
-def process_trial_video(conn, model, trial_id, fps=30):
+def process_trial_video(conn, model, trial_id, fps=None):
     """
-    Process all images for a trial and create a video using stored inference results.
+    Process all images for a trial and create a video.
+    If a model is provided, it runs inference. Otherwise, it uses stored labels.
     
     Args:
         conn: Database connection
-        model: YOLO model instance (not used - kept for compatibility)
+        model: YOLO model instance. If None, uses stored labels from the database.
         trial_id (int): The trial_id to process
-        fps (int): Frames per second for the output video
+        fps (int, optional): Frames per second for the output video. If None, it's inferred.
         
     Returns:
         bool: True if successful, False if failed
     """
     try:
         print(f"\n--- Processing Trial Video: {trial_id} ---")
+        if model:
+            print("Mode: Re-running inference with provided model.")
+        else:
+            print("Mode: Using stored labels from database.")
         
         # Get all inference records for this trial
         records = get_inferences_by_trial_id(conn, trial_id)
@@ -469,16 +477,27 @@ def process_trial_video(conn, model, trial_id, fps=30):
                 image_stream = io.BytesIO(input_data_bytes)
                 unprocessed_image = Image.open(image_stream).convert("RGB")
                 pil_image = correct_image_orientation(unprocessed_image)
+
+                final_image = pil_image # Default to raw image
                 
-                # Get stored inference results
-                stored_labels = record.get('infer_label')
-                if not stored_labels:
-                    print(f"Record {server_id} has no stored labels (infer_label is null).", file=sys.stderr)
-                    failed_count += 1
-                    continue
-                
-                # Use stored labels with custom drawing function
-                final_image = draw_stored_labels(pil_image, stored_labels)
+                if model:
+                    # Run new inference
+                    print("  Running inference...")
+                    results = model(pil_image, conf=CONF_THRESHOLD, verbose=False)
+                    if results:
+                        result = results[0]
+                        print(f"  Inference complete. Detected {len(result.keypoints) if result.keypoints else 0} poses.")
+                        final_image = draw_yolo_results(pil_image, result)
+                    else:
+                        print("  Inference did not return any results object.")
+                else:
+                    # Get stored inference results
+                    stored_labels = record.get('infer_label')
+                    if stored_labels:
+                        # Use stored labels with custom drawing function
+                        final_image = draw_stored_labels(pil_image, stored_labels)
+                    else:
+                        print(f"  Record {server_id} has no stored labels (infer_label is null). Using raw image.")
                 
                 processed_images.append(final_image)
                 successful_count += 1
@@ -492,6 +511,32 @@ def process_trial_video(conn, model, trial_id, fps=30):
             print(f"No images were successfully processed for trial {trial_id}", file=sys.stderr)
             return False
         
+        # Infer FPS from timestamps if not provided
+        if fps is None:
+            if len(records) > 1:
+                time_deltas = []
+                for i in range(len(records) - 1):
+                    time1 = records[i]['client_time']
+                    time2 = records[i+1]['client_time']
+                    if time1 and time2:
+                        delta = (time2 - time1).total_seconds()
+                        if delta > 0: # Avoid division by zero or negative time travel
+                            time_deltas.append(delta)
+                
+                if time_deltas:
+                    avg_delta = sum(time_deltas) / len(time_deltas)
+                    inferred_fps = round(1 / avg_delta)
+                    print(f"Inferred FPS: {inferred_fps} (from {len(time_deltas)} valid time deltas)")
+                    fps = inferred_fps
+                else:
+                    print("Could not infer FPS from timestamps (no valid deltas). Defaulting to 30.")
+                    fps = 30
+            else:
+                print("Not enough frames to infer FPS. Defaulting to 30.")
+                fps = 30
+        else:
+            print(f"Using user-specified FPS: {fps}")
+
         # Create video
         video_filename = os.path.join(output_dir, f"trial_{trial_id}.mp4")
         video_success = create_trial_video(processed_images, video_filename, fps)
@@ -636,7 +681,7 @@ ID Specification Examples:
   Mixed:              123 456 100:5:10
 
 Trial Video Mode:
-  --mode trial-video --trial-id 12345 --fps 30
+  --mode trial-video --trial-id 12345
         """,
         formatter_class=argparse.RawDescriptionHelpFormatter
     )
@@ -646,8 +691,10 @@ Trial Video Mode:
                        help="Processing mode: 'inference' (run YOLO and save labeled image), 'save-only' (just save corrected image), 'plot-stored' (plot stored labels from DB), 'trial-video' (create video from all images in a trial)")
     parser.add_argument("--trial-id", type=int,
                        help="Trial ID to process (required for trial-video mode)")
-    parser.add_argument("--fps", type=int, default=30,
-                       help="Frames per second for video output (default: 30)")
+    parser.add_argument("--fps", type=int, default=None,
+                       help="Frames per second for video output (default: inferred from timestamps).")
+    parser.add_argument("--model-path", type=str, default=None,
+                       help="Path to YOLO model. In 'trial-video' mode, providing this will re-run inference instead of using stored labels.")
     
     # Check if no arguments were provided
     if len(sys.argv) == 1:
@@ -668,9 +715,11 @@ Trial Video Mode:
         print("   - Plots existing labels from database")
         
         print("\n4. Trial Video Mode:")
-        print("   python db_infer_and_label.py --mode trial-video --trial-id 12345 --fps 30")
-        print("   - Creates video from all images in a trial")
-        print("   - Uses stored labels from database")
+        print("   python db_infer_and_label.py --mode trial-video --trial-id 12345")
+        print("   - Creates video from all images in a trial.")
+        print("   - FPS is automatically inferred from image timestamps.")
+        print("   - To override, specify FPS: --fps 30")
+        print("   - To re-run inference: --model-path /path/to/model.pt")
         
         print("\nID Specification Examples:")
         print("  - Single IDs: 123 456 789")
@@ -693,7 +742,7 @@ Trial Video Mode:
             return 1
         trial_id = args.trial_id
         fps = args.fps
-        print(f"Trial video mode: Processing trial {trial_id} at {fps} FPS")
+        print(f"Trial video mode: Processing trial {trial_id}")
     else:
         if not args.id_specs:
             print("Error: id_specs are required for non-trial-video modes", file=sys.stderr)
@@ -721,10 +770,11 @@ Trial Video Mode:
 
     # Only load model if we need it for inference
     model = None
-    if processing_mode == 'inference':
-        print(f"Loading YOLO model from: {MODEL_PATH}")
+    if processing_mode == 'inference' or (processing_mode == 'trial-video' and args.model_path):
+        model_path_to_load = args.model_path if args.model_path else MODEL_PATH
+        print(f"Loading YOLO model from: {model_path_to_load}")
         try:
-            model = YOLO(MODEL_PATH)
+            model = YOLO(model_path_to_load)
             print("YOLO model loaded successfully.")
         except Exception as e:
             print(f"Error loading YOLO model: {e}", file=sys.stderr)

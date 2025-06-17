@@ -6,6 +6,8 @@ This script analyzes the relationship between server_trial and server_inference 
 using client_time and trial_time to determine which inference records belong to which trials.
 """
 
+# python db_assign_trial_ids.py --date 2025-06-16
+
 import os
 import sys
 import argparse
