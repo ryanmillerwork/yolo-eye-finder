@@ -43,7 +43,7 @@ def create_ball_video(trial_info, trial_id):
         return
 
     # --- Video Setup ---
-    output_dir = "/shared/qpcs/db/db_infer_and_label/planko"
+    output_dir = "/mnt/qpcs/db/db_infer_and_label/planko"
     os.makedirs(output_dir, exist_ok=True)
     video_path = os.path.join(output_dir, f"trial-{trial_id}.mp4")
 
