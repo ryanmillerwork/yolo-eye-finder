@@ -57,7 +57,7 @@ total_updated = 0
 while True:
     # Fetch a batch of infer_ids from the server
     server_cur.execute("""
-        SELECT infer_id, host, client_time
+        SELECT infer_id, host, trial_time
         FROM server_inference
         WHERE input_data IS NULL AND host = %s
         ORDER BY infer_id
@@ -67,8 +67,7 @@ while True:
     if not rows:
         break
 
-    # Create a list of tuples with the keys. This contains the original server client_time,
-    # which is needed for the final UPDATE statement to be precise.
+    # Create a list of tuples with the keys.
     keys = [(r[0], r[1], r[2]) for r in rows]
 
     # --- Fetch matching input_data from client DB ---
@@ -78,23 +77,23 @@ while True:
         CREATE TEMP TABLE IF NOT EXISTS keys_to_fetch (
             infer_id INT,
             host INET,
-            client_time TIMESTAMP WITHOUT TIME ZONE
+            trial_time INT
         );
     """)
     client_cur.execute("TRUNCATE TABLE keys_to_fetch;")
 
     execute_values(client_cur,
-        "INSERT INTO keys_to_fetch (infer_id, host, client_time) VALUES %s",
+        "INSERT INTO keys_to_fetch (infer_id, host, trial_time) VALUES %s",
         keys
     )
 
     client_cur.execute("""
-        SELECT i.infer_id, i.host, i.client_time, i.input_data
+        SELECT i.infer_id, i.host, i.trial_time, i.input_data
         FROM inference AS i
         JOIN keys_to_fetch AS t ON
             i.infer_id = t.infer_id AND
             i.host = t.host AND
-            i.client_time = t.client_time;
+            i.trial_time = t.trial_time;
     """)
     input_data_rows = client_cur.fetchall()
 
@@ -102,15 +101,15 @@ while True:
     input_lookup = {(r[0], r[1], r[2]): r[3] for r in input_data_rows}
 
     # Perform update one by one
-    for infer_id, host, client_time in keys:
-        input_data = input_lookup.get((infer_id, host, client_time))
+    for infer_id, host, trial_time in keys:
+        input_data = input_lookup.get((infer_id, host, trial_time))
         if input_data:
             server_cur.execute("""
                 UPDATE server_inference
                 SET input_data = %s
-                WHERE infer_id = %s AND host = %s AND client_time = %s
+                WHERE infer_id = %s AND host = %s AND trial_time = %s
                       AND input_data IS NULL
-            """, (input_data, infer_id, host, client_time))
+            """, (input_data, infer_id, host, trial_time))
             total_updated += server_cur.rowcount
 
     server_conn.commit()
