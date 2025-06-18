@@ -45,7 +45,7 @@ server_cur = server_conn.cursor()
 # Step 1: Count total rows to process
 server_cur.execute("""
     SELECT COUNT(*) FROM server_inference
-    WHERE input_table IS NULL AND host = %s
+    WHERE input_data IS NULL AND host = %s
 """, (TARGET_HOST,))
 total_rows = server_cur.fetchone()[0]
 print(f"Total rows missing input_data: {total_rows}")
@@ -59,7 +59,7 @@ while True:
     server_cur.execute("""
         SELECT infer_id, host, client_time
         FROM server_inference
-        WHERE input_table IS NULL AND host = %s
+        WHERE input_data IS NULL AND host = %s
         ORDER BY infer_id
         LIMIT %s OFFSET %s
     """, (TARGET_HOST, BATCH_SIZE, offset))
@@ -89,7 +89,7 @@ while True:
                 UPDATE server_inference
                 SET input_data = %s
                 WHERE infer_id = %s AND host = %s AND client_time = %s
-                      AND input_table IS NULL
+                      AND input_data IS NULL
             """, (input_data, infer_id, host, client_time))
             total_updated += server_cur.rowcount
 
