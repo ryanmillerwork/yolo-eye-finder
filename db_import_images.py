@@ -42,33 +42,23 @@ server_conn = psycopg2.connect(**server_db_config)
 client_cur = client_conn.cursor()
 server_cur = server_conn.cursor()
 
-# Step 1: Count total rows to process
+# Step 1: Fetch all keys of rows to process at the beginning
+print("Fetching all keys for rows missing input_data...")
 server_cur.execute("""
-    SELECT COUNT(*) FROM server_inference
+    SELECT infer_id, host, trial_time FROM server_inference
     WHERE input_data IS NULL AND host = %s
+    ORDER BY infer_id
 """, (TARGET_HOST,))
-total_rows = server_cur.fetchone()[0]
-print(f"Total rows missing input_data: {total_rows}")
+all_keys = server_cur.fetchall()
+total_rows = len(all_keys)
+print(f"Total rows to process: {total_rows}")
 
 # Step 2: Batched processing
-offset = 0
 total_updated = 0
 
-while True:
-    # Fetch a batch of infer_ids from the server
-    server_cur.execute("""
-        SELECT infer_id, host, trial_time
-        FROM server_inference
-        WHERE input_data IS NULL AND host = %s
-        ORDER BY infer_id
-        LIMIT %s OFFSET %s
-    """, (TARGET_HOST, BATCH_SIZE, offset))
-    rows = server_cur.fetchall()
-    if not rows:
-        break
-
-    # Create a list of tuples with the keys.
-    keys = [(r[0], r[1], r[2]) for r in rows]
+for i in range(0, total_rows, BATCH_SIZE):
+    keys = all_keys[i:i + BATCH_SIZE]
+    offset = i # For logging purposes
 
     # --- Fetch matching input_data from client DB ---
     # This uses a temporary table, which is more robust for composite keys with timestamps
@@ -114,7 +104,6 @@ while True:
 
     server_conn.commit()
     print(f"Batch complete: offset {offset} – updated so far: {total_updated}")
-    offset += BATCH_SIZE
 
     time.sleep(0.1)  # short delay to avoid overloading either DB
 
