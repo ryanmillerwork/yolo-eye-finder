@@ -67,15 +67,33 @@ while True:
     if not rows:
         break
 
-    # Create a temp tuple list for parameterized IN clause
+    # Create a list of tuples with the keys
     keys = [(r[0], r[1], r[2]) for r in rows]
 
-    # Fetch matching input_data from client DB
-    execute_values(client_cur, """
-        SELECT infer_id, host, client_time, input_data
-        FROM inference
-        WHERE (infer_id, host, client_time) IN %s
-    """, keys)
+    # Fetch matching input_data from client DB using a temporary table.
+    # This is more robust for composite keys with timestamps than a large `IN` clause.
+    client_cur.execute("""
+        CREATE TEMP TABLE IF NOT EXISTS keys_to_fetch (
+            infer_id INT,
+            host VARCHAR,
+            client_time TIMESTAMP WITHOUT TIME ZONE
+        );
+    """)
+    client_cur.execute("TRUNCATE TABLE keys_to_fetch;")
+
+    execute_values(client_cur, 
+        "INSERT INTO keys_to_fetch (infer_id, host, client_time) VALUES %s",
+        keys
+    )
+
+    client_cur.execute("""
+        SELECT i.infer_id, i.host, i.client_time, i.input_data
+        FROM inference AS i
+        JOIN keys_to_fetch AS t ON 
+            i.infer_id = t.infer_id AND 
+            i.host = t.host AND 
+            i.client_time = t.client_time;
+    """)
     input_data_rows = client_cur.fetchall()
 
     # Index by composite key for fast lookup
