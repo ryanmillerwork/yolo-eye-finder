@@ -20,7 +20,7 @@ if not db_password:
 client_db_config = {
     'host': args.source_db,
     'port': 5432,
-    'dbname': 'client_db',
+    'dbname': 'base',
     'user': 'postgres',
     'password': db_password
 }
@@ -28,7 +28,7 @@ client_db_config = {
 server_db_config = {
     'host': 'localhost',
     'port': 5432,
-    'dbname': 'server_db',
+    'dbname': 'base',
     'user': 'postgres',
     'password': db_password
 }
