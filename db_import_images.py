@@ -67,11 +67,13 @@ while True:
     if not rows:
         break
 
-    # Create a list of tuples with the keys
+    # Create a list of tuples with the keys. This contains the original server client_time,
+    # which is needed for the final UPDATE statement to be precise.
     keys = [(r[0], r[1], r[2]) for r in rows]
 
-    # Fetch matching input_data from client DB using a temporary table.
-    # This is more robust for composite keys with timestamps than a large `IN` clause.
+    # --- Fetch matching input_data from client DB ---
+    # This uses a temporary table, which is more robust for composite keys with timestamps
+    # than a large `IN` clause.
     client_cur.execute("""
         CREATE TEMP TABLE IF NOT EXISTS keys_to_fetch (
             infer_id INT,
@@ -81,7 +83,7 @@ while True:
     """)
     client_cur.execute("TRUNCATE TABLE keys_to_fetch;")
 
-    execute_values(client_cur, 
+    execute_values(client_cur,
         "INSERT INTO keys_to_fetch (infer_id, host, client_time) VALUES %s",
         keys
     )
@@ -89,9 +91,9 @@ while True:
     client_cur.execute("""
         SELECT i.infer_id, i.host, i.client_time, i.input_data
         FROM inference AS i
-        JOIN keys_to_fetch AS t ON 
-            i.infer_id = t.infer_id AND 
-            i.host = t.host AND 
+        JOIN keys_to_fetch AS t ON
+            i.infer_id = t.infer_id AND
+            i.host = t.host AND
             i.client_time = t.client_time;
     """)
     input_data_rows = client_cur.fetchall()
@@ -99,7 +101,7 @@ while True:
     # Index by composite key for fast lookup
     input_lookup = {(r[0], r[1], r[2]): r[3] for r in input_data_rows}
 
-    # Perform update one by one (or batch if needed)
+    # Perform update one by one
     for infer_id, host, client_time in keys:
         input_data = input_lookup.get((infer_id, host, client_time))
         if input_data:
