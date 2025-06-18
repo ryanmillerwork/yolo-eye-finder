@@ -75,7 +75,7 @@ while True:
     client_cur.execute("""
         CREATE TEMP TABLE IF NOT EXISTS keys_to_fetch (
             infer_id INT,
-            host VARCHAR,
+            host INET,
             client_time TIMESTAMP WITHOUT TIME ZONE
         );
     """)
